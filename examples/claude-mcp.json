@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "redpitaya-core": {
+      "type": "stdio",
+      "command": "/absolute/path/to/RedPitayaCore-MCP/.venv/bin/redpitayacore-mcp",
+      "args": [],
+      "env": {
+        "RP_MODE": "mock"
+      }
+    }
+  }
+}

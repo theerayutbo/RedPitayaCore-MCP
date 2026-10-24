@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "redpitayacore-mcp"
+version = "0.1.0"
+description = "Safe RX diagnostics MCP server for Red Pitaya and Claude Code"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["mcp>=1.30,<2", "httpx>=0.28.1,<1"]
+
+[project.scripts]
+redpitayacore-mcp = "redpitayacore_mcp.server:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17,<1", "mypy>=2.4,<3", "bandit>=1.9,<2", "pip-audit>=2.10,<3", "build>=1.6,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/redpitayacore_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
