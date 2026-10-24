@@ -30,5 +30,5 @@ and concurrent MCP calls. Each is covered by transport or service tests.
   lifecycle/RX guards. Confirm live TX/start remain unreachable.
 - [x] Add README, provenance, security policy, license, locked dependencies and
   least-privilege GitHub Actions; review and run all checks.
-- [ ] Create the public GitHub repository, push reviewed contents, inspect remote
+- [x] Create the public GitHub repository, push reviewed contents, inspect remote
   visibility/commit/CI and report hardware-validation limits.

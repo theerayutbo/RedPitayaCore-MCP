@@ -25,6 +25,10 @@ GitHub Actions repeats checks on Python 3.11, 3.12 and 3.13, with a separate
 dependency audit. Check the repository's Actions page for the current result.
 Actions use pinned commit references and read-only repository permissions.
 
+The first published revision `e527bda` passed all four jobs (Python 3.11, 3.12,
+3.13 and dependency audit):
+[successful CI run](https://github.com/theerayutbo/RedPitayaCore-MCP/actions/runs/40099377661).
+
 ## What remains unverified
 
 - Real STEMlab 125-14 operation on official OS 3.00-57 and the installed app
