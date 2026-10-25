@@ -149,6 +149,24 @@ async def test_disabled_ssh_does_not_launch_process(monkeypatch):
     assert result["available"] is False
 
 
+async def test_system_diagnostic_commands_limit_concurrent_ssh_to_two(monkeypatch):
+    active, peak = 0, 0
+
+    async def fake_command(config, command):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return {"available": True, "text": "fixture"}
+
+    monkeypatch.setattr("redpitayacore_mcp.transport._ssh_command", fake_command)
+    result = await read_system(Settings(mode="live", host="192.0.2.25", ssh_user="root"))
+    assert peak <= 2
+    assert result["fpga_image_verified"] is False
+    assert "installed_bitstream_sha256" in result["evidence"]
+
+
 @pytest.mark.parametrize("oversized", [False, True])
 async def test_ssh_reads_all_chunks_or_rejects_oversize(monkeypatch, oversized):
     class Process:

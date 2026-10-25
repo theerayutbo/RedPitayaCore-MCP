@@ -1,7 +1,9 @@
 # Provenance and compatibility evidence
 
 RedPitayaCore-MCP was written as a new implementation. No private source was
-copied into this repository.
+copied into this repository. One optional unified patch and its offline regression
+fixture include the minimum upstream server context needed to test a pinned TX
+short-read correction; that copied context retains Pavel Demin's MIT notice.
 
 ## Accessible projects inspected first
 
@@ -65,6 +67,10 @@ unavailable evidence rather than converting it into a positive identification.
 ## License boundary
 
 This repository is licensed under MIT. Links and small factual protocol
-descriptions identify upstream evidence; upstream source files are not vendored
-or copied. Users remain responsible for the licenses and terms of software on
-their Red Pitaya device.
+descriptions identify upstream evidence. The full upstream server is not
+vendored. The limited upstream context in
+[`patches/sdr-transceiver-exact-tx.patch`](../patches/sdr-transceiver-exact-tx.patch)
+and `tests/test_tx_server_patch.py` is documented with the upstream commit, blob,
+copyright, and MIT license in [`patches/README.md`](../patches/README.md).
+Users remain responsible for the licenses and terms of software on their Red
+Pitaya device.

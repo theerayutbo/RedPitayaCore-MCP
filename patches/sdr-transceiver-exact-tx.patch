@@ -1,0 +1,50 @@
+From: RedPitayaCore-MCP contributors
+Subject: [PATCH] sdr_transceiver: receive complete TX frames
+
+Target-Commit: cbecbdd45735a04ad6ccb0094a242a1f820665b8
+Target-Blob: d61e6ba1700f77c3d831fd724893edf2d07dd7dc
+Upstream-License: MIT
+
+TCP recv() can return a positive short count. Accumulate exactly one 16384-byte
+TX frame before copying it to the FPGA FIFO, retry interrupted reads, and leave
+the handler without copying an incomplete frame on EOF or another socket error.
+
+diff --git a/projects/sdr_transceiver/server/sdr-transceiver.c b/projects/sdr_transceiver/server/sdr-transceiver.c
+--- a/projects/sdr_transceiver/server/sdr-transceiver.c
++++ b/projects/sdr_transceiver/server/sdr-transceiver.c
+@@ -322,6 +322,8 @@ void *tx_ctrl_handler(void *arg)
+ void *tx_data_handler(void *arg)
+ {
+   int i, sock_client = sock_thread[3];
++  ssize_t result;
++  size_t received;
+   uint8_t buffer[16384];
+ 
+   *tx_rst &= ~1;
+@@ -336,10 +338,23 @@ void *tx_data_handler(void *arg)
+       for(i = 0; i < 2048; ++i) *fifo = 0;
+     }
+ 
+-    if(recv(sock_client, buffer, 16384, 0) <= 0) break;
++    received = 0;
++    while(received < sizeof(buffer))
++    {
++      result = recv(sock_client, buffer + received, sizeof(buffer) - received, 0);
++      if(result > 0)
++      {
++        received += (size_t)result;
++        continue;
++      }
++      if(result < 0 && errno == EINTR) continue;
++      goto cleanup;
++    }
++
+     memcpy(fifo, buffer, 16384);
+   }
+ 
++cleanup:
+   close(sock_client);
+   sock_thread[3] = -1;
+ 
+-- 
+2.50.1

@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -29,6 +30,11 @@ class Settings:
     allow_lifecycle: bool = False
     ssh_user: str | None = None
     ssh_port: int = 22
+    project_root: Path | None = None
+    allow_project_write: bool = False
+    allow_local_build: bool = False
+    vivado_executable: Path | None = None
+    build_timeout: float = 300
 
     def __post_init__(self) -> None:
         if self.mode not in {"mock", "live"}:
@@ -46,6 +52,12 @@ class Settings:
             raise ValueError("RP_TIMEOUT must be finite, from 0.1 to 10 seconds")
         if self.ssh_user is not None and not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", self.ssh_user):
             raise ValueError("RP_SSH_USER must be a simple Unix account name")
+        if self.project_root is not None and not self.project_root.is_absolute():
+            raise ValueError("RP_PROJECT_ROOT must be an absolute local project directory")
+        if self.vivado_executable is not None and not self.vivado_executable.is_absolute():
+            raise ValueError("RP_VIVADO_EXECUTABLE must be an absolute operator-selected path")
+        if not math.isfinite(self.build_timeout) or not 0.1 <= self.build_timeout <= 3600:
+            raise ValueError("RP_BUILD_TIMEOUT must be finite, from 0.1 to 3600 seconds")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -63,4 +75,11 @@ class Settings:
             allow_lifecycle=_flag(env, "RP_ALLOW_LIFECYCLE"),
             ssh_user=env.get("RP_SSH_USER") or None,
             ssh_port=int(env.get("RP_SSH_PORT", "22")),
+            project_root=Path(env["RP_PROJECT_ROOT"]) if env.get("RP_PROJECT_ROOT") else None,
+            allow_project_write=_flag(env, "RP_ALLOW_PROJECT_WRITE"),
+            allow_local_build=_flag(env, "RP_ALLOW_LOCAL_BUILD"),
+            vivado_executable=Path(env["RP_VIVADO_EXECUTABLE"])
+            if env.get("RP_VIVADO_EXECUTABLE")
+            else None,
+            build_timeout=float(env.get("RP_BUILD_TIMEOUT", "300")),
         )

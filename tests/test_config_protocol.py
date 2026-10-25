@@ -14,6 +14,10 @@ def test_mock_default_has_no_target_or_hardware_permissions():
     assert not config.allow_rx
     assert not config.allow_lifecycle
     assert config.ssh_user is None
+    assert config.project_root is None
+    assert not config.allow_project_write
+    assert not config.allow_local_build
+    assert config.vivado_executable is None
 
 
 @pytest.mark.parametrize(
@@ -33,6 +37,12 @@ def test_mock_default_has_no_target_or_hardware_permissions():
         {"RP_ALLOW_RX": "yes please"},
         {"RP_SSH_USER": "root; id"},
         {"RP_SSH_USER": "-oProxyCommand=bad"},
+        {"RP_PROJECT_ROOT": "relative/project"},
+        {"RP_VIVADO_EXECUTABLE": "vivado;bad"},
+        {"RP_BUILD_TIMEOUT": "nan"},
+        {"RP_BUILD_TIMEOUT": "0"},
+        {"RP_BUILD_TIMEOUT": "3601"},
+        {"RP_ALLOW_LOCAL_BUILD": "yes please"},
     ],
 )
 def test_invalid_config_fails_closed(env):

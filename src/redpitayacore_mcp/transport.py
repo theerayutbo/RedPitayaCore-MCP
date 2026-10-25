@@ -22,6 +22,11 @@ SSH_COMMANDS = {
     "process_names": "ps -eo comm=",
     "fpga_state": "cat /sys/class/fpga_manager/fpga0/state",
     "loaded_image_label": "cat /tmp/loaded_fpga.inf",
+    "fpga_flags": "cat /sys/class/fpga_manager/fpga0/flags",
+    "overlay_inventory": "ls -1 /configfs/device-tree/overlays",
+    "installed_bitstream_sha256": "sha256sum /opt/redpitaya/www/apps/sdr_transceiver/fpga.bit.bin",
+    "installed_dtbo_sha256": "sha256sum /opt/redpitaya/www/apps/sdr_transceiver/fpga.dtbo",
+    "installed_server_sha256": "sha256sum /opt/redpitaya/www/apps/sdr_transceiver/sdr-transceiver",
 }
 
 
@@ -164,14 +169,17 @@ async def read_system(config: Settings) -> dict[str, Any]:
             "fpga_image_verified": False,
         }
 
+    semaphore = asyncio.Semaphore(2)
+
     async def read_one(command: str) -> dict[str, Any]:
-        try:
-            return await _ssh_command(config, command)
-        except (OSError, TimeoutError, ValueError):
-            return {
-                "available": False,
-                "reason": "SSH unavailable, timed out or response too large",
-            }
+        async with semaphore:
+            try:
+                return await _ssh_command(config, command)
+            except (OSError, TimeoutError, ValueError):
+                return {
+                    "available": False,
+                    "reason": "SSH unavailable, timed out or response too large",
+                }
 
     results = await asyncio.gather(*(read_one(command) for command in SSH_COMMANDS.values()))
     evidence = dict(zip(SSH_COMMANDS, results, strict=True))
