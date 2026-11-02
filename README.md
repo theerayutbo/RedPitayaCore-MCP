@@ -117,6 +117,7 @@ Configuration belongs to the server process, not MCP tool arguments.
 | `RP_HTTP_PORT` | `80` | HTTP metadata port |
 | `RP_TIMEOUT` | `3` | I/O timeout from 0.1 through 10 seconds |
 | `RP_ALLOW_RX` | `false` | Operator permission for live RX state changes |
+| `RP_RX_SAMPLE_ORDER` | `glibc_memcpy` | Restores RX sample order, as needed on the tested board. `raw` is for images that read the FIFO in order |
 | `RP_ALLOW_LIFECYCLE` | `false` | Permission for mock lifecycle execution only |
 | `RP_SSH_USER` | unset | Enables optional fixed read-only SSH diagnostics |
 | `RP_SSH_PORT` | `22` | SSH port |
@@ -218,16 +219,21 @@ device, OS, application, build, FPGA-image, or protocol identity.
 3. If separately configured, run `rp_system_diagnostics`; review OS, app/process,
    and FPGA state as independent evidence. Unknown remains unknown.
 4. Have the operator start the installed app using their established device
-   procedure. This project does not automate bitstream loading.
+   procedure. This project does not automate bitstream loading. Do not open the
+   board's web UI or call any `/bazaar` URL while the app is in use: on the tested
+   board `/bazaar?apps` and `/bazaar?help` stopped the running app within 0.5 s.
 5. Verify the device model, OS release, installed app build, FPGA state, and
    listening service outside this MCP server.
 6. Enable RX only after reviewing the side effects and local RF setup. Call
    `rp_rx_connect` with explicit acknowledgement, make a bounded read, then call
    `rp_rx_disconnect`.
 
-No real hardware was used to develop or test this release. Loopback fixtures and
-mock mode can validate software behavior, but hardware compatibility remains an
-operator acceptance task.
+**Tested on real hardware.** Release 0.2.1 passed 42 of 42 RX-only acceptance checks
+on a STEMlab 125-14 running `sdr_transceiver` metadata version 1.0-20260302 on
+2026-11-02: HTTP diagnostics, TCP probe, RX at all six sample rates, disconnect and
+reconnect, and four safety refusals. SSH diagnostics were not tested. TX is not part
+of this server. See [docs/VALIDATION.md](docs/VALIDATION.md) for the results and limits,
+and run `scripts/live_acceptance.py` to repeat them on your own idle board.
 
 ## Offline FPGA quick start
 

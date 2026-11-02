@@ -93,3 +93,10 @@ def test_iq_format_and_bad_samples():
         decode_iq(b"123")
     with pytest.raises(ValueError):
         decode_iq(struct.pack("<2f", math.nan, 1))
+
+
+def test_rx_sample_order_defaults_to_the_stock_image_and_rejects_unknown_values():
+    assert Settings.from_env({}).rx_sample_order == "glibc_memcpy"
+    assert Settings.from_env({"RP_RX_SAMPLE_ORDER": "raw"}).rx_sample_order == "raw"
+    with pytest.raises(ValueError, match="RP_RX_SAMPLE_ORDER"):
+        Settings.from_env({"RP_RX_SAMPLE_ORDER": "swapped"})

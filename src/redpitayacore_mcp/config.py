@@ -9,7 +9,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 
 def _flag(env: Mapping[str, str], key: str) -> bool:
@@ -27,6 +27,7 @@ class Settings:
     http_port: int = 80
     timeout: float = 3.0
     allow_rx: bool = False
+    rx_sample_order: Literal["glibc_memcpy", "raw"] = "glibc_memcpy"
     allow_lifecycle: bool = False
     ssh_user: str | None = None
     ssh_port: int = 22
@@ -37,6 +38,8 @@ class Settings:
     build_timeout: float = 300
 
     def __post_init__(self) -> None:
+        if self.rx_sample_order not in {"glibc_memcpy", "raw"}:
+            raise ValueError("RP_RX_SAMPLE_ORDER must be glibc_memcpy or raw")
         if self.mode not in {"mock", "live"}:
             raise ValueError("RP_MODE must be mock or live")
         if self.mode == "live" and not self.host:
@@ -72,6 +75,9 @@ class Settings:
             http_port=int(env.get("RP_HTTP_PORT", "80")),
             timeout=float(env.get("RP_TIMEOUT", "3")),
             allow_rx=_flag(env, "RP_ALLOW_RX"),
+            rx_sample_order=cast(
+                Literal["glibc_memcpy", "raw"], env.get("RP_RX_SAMPLE_ORDER", "glibc_memcpy")
+            ),
             allow_lifecycle=_flag(env, "RP_ALLOW_LIFECYCLE"),
             ssh_user=env.get("RP_SSH_USER") or None,
             ssh_port=int(env.get("RP_SSH_PORT", "22")),

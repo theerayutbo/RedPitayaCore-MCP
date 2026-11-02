@@ -12,9 +12,16 @@ import httpx
 
 from .config import Settings
 from .protocol import MAX_SAMPLES, decode_iq, rx_frequency, rx_rate, rx_role
+from .rx_order import BLOCK_BYTES, restore_block
 
-HTTP_PATHS = frozenset({"/bazaar?help", "/bazaar?apps", "/sdr_transceiver/info/info.json"})
+# Any GET under /bazaar reaches the board's app controller. Measured on a STEMlab 125-14,
+# /bazaar?help and /bazaar?apps stop a running sdr_transceiver within 0.5 s. Never add one here.
+HTTP_PATHS = frozenset({"/sdr_transceiver/info/info.json"})
 MAX_RESPONSE = 65536
+# Measured on a STEMlab 125-14: reconnecting 0 ms after close was dropped, 50 ms worked.
+RX_REOPEN_GUARD_S = 0.2
+# Tuning settles before the data role resets the FIFO.
+RX_SETTLE_S = 0.05
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
     "board_model": "cat /sys/firmware/devicetree/base/model",
@@ -47,6 +54,14 @@ async def _wait_writer_closed(writer: asyncio.StreamWriter) -> None:
         await asyncio.wait_for(writer.wait_closed(), 1)
 
 
+def _probe_failure(error: OSError | TimeoutError) -> str:
+    if isinstance(error, ConnectionRefusedError):
+        return "refused"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    return "network_error"
+
+
 async def probe_tcp(config: Settings) -> dict[str, Any]:
     host = _require_live(config)
     writer = None
@@ -60,9 +75,10 @@ async def probe_tcp(config: Settings) -> dict[str, Any]:
             "protocol_verified": False,
             "note": "TCP accept only; no app/build identification",
         }
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError) as error:
         return {
             "reachable": False,
+            "failure": _probe_failure(error),
             "selector_sent": False,
             "protocol_verified": False,
             "note": "Check board address, network and operator-started SDR app",
@@ -198,6 +214,8 @@ class RxConnection:
         self.control: asyncio.StreamWriter | None = None
         self.data: asyncio.StreamWriter | None = None
         self.reader: asyncio.StreamReader | None = None
+        self.pending = bytearray()
+        self.closed_at: float | None = None
 
     @property
     def connected(self) -> bool:
@@ -224,10 +242,15 @@ class RxConnection:
         frequency, rate = rx_frequency(frequency_hz), rx_rate(sample_rate)
         if self.connected:
             raise ValueError("RX session already open; disconnect before reconfiguring")
+        if self.closed_at is not None:
+            await asyncio.sleep(
+                max(0.0, self.closed_at + RX_REOPEN_GUARD_S - asyncio.get_running_loop().time())
+            )
         try:
             _, self.control = await self._open_role("control")
             self.control.write(frequency + rate)
             await asyncio.wait_for(self.control.drain(), self.config.timeout)
+            await asyncio.sleep(RX_SETTLE_S)
             self.reader, self.data = await self._open_role("data")
         except BaseException:
             await self.close()
@@ -239,7 +262,8 @@ class RxConnection:
         if not self.connected or self.reader is None:
             raise ConnectionError("No RX session; call rp_rx_connect first")
         try:
-            raw = await asyncio.wait_for(self.reader.readexactly(count * 8), self.config.timeout)
+            async with asyncio.timeout(self.config.timeout):
+                raw = await self._read_bytes(self.reader, count * 8)
             return decode_iq(raw)
         except asyncio.IncompleteReadError as error:
             await self.close()
@@ -250,10 +274,23 @@ class RxConnection:
             await self.close()
             raise
 
+    async def _read_bytes(self, reader: asyncio.StreamReader, size: int) -> bytes:
+        if self.config.rx_sample_order == "raw":
+            return await reader.readexactly(size)
+        # Order is only defined per whole block counted from the first byte of the connection.
+        while len(self.pending) < size:
+            self.pending += restore_block(await reader.readexactly(BLOCK_BYTES))
+        data = bytes(self.pending[:size])
+        del self.pending[:size]
+        return data
+
     async def close(self) -> None:
         writers = [writer for writer in (self.data, self.control) if writer is not None]
         # Signal BOTH transports before any await: cancellation cannot orphan the second one.
         for writer in writers:
             writer.close()
         self.data, self.control, self.reader = None, None, None
+        self.pending.clear()
+        if writers:
+            self.closed_at = asyncio.get_running_loop().time()
         await asyncio.gather(*(_wait_writer_closed(writer) for writer in writers))
