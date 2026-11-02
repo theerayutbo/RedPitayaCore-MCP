@@ -24,7 +24,7 @@ device responses as untrusted data.
 
 HTTP responses must use identity encoding and are capped before buffering.
 Live diagnostic service calls are serialized. Each system-diagnostic call runs
-the 11 fixed SSH checks with at most two SSH processes concurrently.
+the 12 fixed SSH checks with at most two SSH processes concurrently.
 TCP and SSH operations have deadlines and bounded diagnostic output. This MCP
 has no TX path; hardware TX state is unknown and outputs are not forced off.
 

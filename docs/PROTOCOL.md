@@ -86,10 +86,40 @@ occupies the server's accept loop while it waits for a role word. An open TCP po
 proves only reachability at that instant; it does not identify the application,
 FPGA image, device model, OS release, or source revision.
 
-`rp_device_diagnostics` reads bounded HTTP metadata. `rp_system_diagnostics`
+`rp_device_diagnostics` reads bounded HTTP metadata from `info.json` only. It must
+never call a `/bazaar` URL, because those stop a running app (see below). `rp_system_diagnostics`
 optionally runs a fixed set of read-only commands through the local OpenSSH
 client. These observations are reported separately. Missing evidence remains
 unknown, and an FPGA manager state does not identify the loaded image.
+
+## Measured board behavior
+
+Measured on a STEMlab 125-14 on 2026-11-02.
+
+- **`/bazaar` is not read-only.** `/bazaar?help` and `/bazaar?apps` closed port 1001
+  within 0.5 s, every time tested. Without internet access they also return an HTML
+  error page with status 200 instead of JSON. `info.json` left the port open. The
+  mechanism inside the board's controller was not investigated.
+- **RX samples arrive in a fixed wrong order.** The server copies each 16384-byte block
+  from a pop-on-read FIFO with `memcpy`, and glibc's ARMv7 version is understood to read
+  some words early. That mechanism was not measured directly. Left uncorrected, a tone
+  gains seven spurs at tone + k * fs/8, 16 dB below it. Reordering whole blocks, counted
+  from the first byte of the data connection, took the worst of those seven to -83 dBc
+  or better at all six rates. Block 0 was excluded from the measurement. This is why
+  `RP_RX_SAMPLE_ORDER` defaults to `glibc_memcpy`. An image that reads the FIFO in
+  order needs `raw`.
+- **Role release is not instant.** Reconnecting 0 ms after closing RX was dropped and
+  50 ms worked, so the client waits 200 ms before reopening.
+- **Board identity comes from `/tmp/sysinfo.json`.** OS 3.00 has no devicetree `model`
+  node. The file also holds the MAC and FPGA DNA, so the server reads only its `name`
+  line. Its `/tmp/loaded_fpga.inf` label is deleted by the SDR app's `fpga.sh`, so
+  `absent` is normal while that app is loaded.
+- **A busy role is refused by closing the socket.** No ACK exists, so a client sees only
+  the close. Reads through Python keep real time up to 100,000 S/s. The board and link
+  also kept 1,248,000 S/s to a raw socket reader for 6 s.
+- **A closed port answers with a TCP refusal** when the board is up and the app is
+  stopped. `rp_connection_probe` reports `failure` as `refused`, `timeout` or
+  `network_error`.
 
 ## Lifecycle boundary
 
@@ -115,6 +145,6 @@ and `sdr_transceiver` 1.0-20260302 build `cbecbdd4`. The server does not claim t
 measure or cryptographically verify those values. Device metadata, an open port,
 or successful sample reads cannot establish the full target identity.
 
-Hardware acceptance must begin with safe diagnostics and an operator-managed app
-start. Confirm the device model, OS, installed app build, FPGA state, listening
+`scripts/live_acceptance.py` is the repeatable RX-only acceptance test. Hardware
+acceptance must begin with safe diagnostics and an operator-managed app start. Confirm the device model, OS, installed app build, FPGA state, listening
 service, and RX behavior independently before relying on live results.

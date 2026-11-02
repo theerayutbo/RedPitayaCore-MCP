@@ -60,7 +60,7 @@ def build_server(config: Settings) -> FastMCP[Any]:
 
     @mcp.tool(annotations=read_only)
     async def rp_device_diagnostics() -> dict[str, Any]:
-        """Read bounded HTTP app metadata. Cannot verify running app/OS/FPGA identity."""
+        """Read app info.json over HTTP. Never calls /bazaar. No running app/OS/FPGA identity."""
         return await service.diagnostics()
 
     @mcp.tool(annotations=read_only)

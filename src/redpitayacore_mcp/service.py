@@ -48,6 +48,7 @@ class Service:
             "mcp_tx_path_present": False,
             "hardware_tx_state": "unknown_not_read",
             "live_rx_enabled": self.config.allow_rx,
+            "rx_sample_order": self.config.rx_sample_order,
             "live_lifecycle_enabled": False,
             "ssh_enabled": self.config.ssh_user is not None,
             "supported_sample_rates": list(RATES),
@@ -226,6 +227,7 @@ class Service:
                 "rms_magnitude": math.sqrt(power),
                 "peak_magnitude": max(math.hypot(i, q) for i, q in samples),
                 "units": "uncalibrated application float32 units; not volts or dBm",
+                "sample_order": self.config.rx_sample_order,
                 "requested_settings": self.requested,
                 "settings_verified": False,
                 "note": "Buffered IQ; no timestamps, continuity guarantee, ADC clipping "
