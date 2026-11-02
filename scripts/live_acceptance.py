@@ -2,6 +2,9 @@
 """Operator-run RX-only acceptance test on an idle STEMlab 125-14. Needs numpy.
 
 Usage: python scripts/live_acceptance.py --host BOARD_IPV4 --i-own-this-idle-board
+       [--ssh-user USER]
+
+--ssh-user adds SSH checks. They need key login and a verified known_hosts entry.
 
 The script starts and stops sdr_transceiver with the board's own API. That is the
 operator's procedure, and the MCP server itself still cannot do it. It opens only RX roles
@@ -15,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import replace
@@ -53,7 +57,7 @@ def app(host: str, action: str) -> None:
         raise RuntimeError(f"Board app {action} failed: {body}")
 
 
-async def mcp_session(host: str, allow_rx: bool):
+async def mcp_session(host: str, allow_rx: bool, ssh_user: str = ""):
     env = {
         **os.environ,
         "RP_MODE": "live",
@@ -62,7 +66,7 @@ async def mcp_session(host: str, allow_rx: bool):
         "RP_ALLOW_LIFECYCLE": "false",
         "RP_ALLOW_PROJECT_WRITE": "false",
         "RP_ALLOW_LOCAL_BUILD": "false",
-        "RP_SSH_USER": "",
+        "RP_SSH_USER": ssh_user,
     }
     return StdioServerParameters(command=sys.executable, args=["-m", "redpitayacore_mcp"], env=env)
 
@@ -164,6 +168,39 @@ async def tools_with_app_up(host: str) -> None:
                 check(f"disconnect, cycle {cycle}", closed["session_open"] is False)
 
 
+async def tools_over_ssh(host: str, ssh_user: str) -> None:
+    async with stdio_client(await mcp_session(host, False, ssh_user)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            system = (await call(session, "rp_system_diagnostics")).structuredContent
+            evidence = system.get("evidence", {})
+            check(
+                "SSH: every fixed command ran",
+                bool(evidence) and all(item["available"] for item in evidence.values()),
+                len(evidence),
+            )
+            joined = " ".join(str(item.get("text", "")) for item in evidence.values())
+            check(
+                "SSH: no MAC address returned",
+                not re.search(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", joined, re.I),
+            )
+            check("SSH: no DNA field returned", '"dna"' not in joined)
+            for name, item in evidence.items():
+                text = str(item.get("text", ""))[:120].replace("\n", " ")
+                check(f"SSH: {name}", item["available"], text)
+            model = str(evidence.get("board_model", {}).get("text", ""))
+            check("SSH: board model is STEMlab 125-14", "STEMlab 125-14" in model, model)
+            names = str(evidence.get("process_names", {}).get("text", ""))
+            check("SSH: sdr-transceiver process seen", "sdr-transceiver" in names)
+            version = str(evidence.get("ecosystem_version", {}).get("text", ""))
+            check("SSH: ecosystem version text read", "Version:" in version, version[:40])
+            check("SSH: image stays unverified", system["fpga_image_verified"] is False)
+            fpga = (await call(session, "rp_fpga_diagnostics")).structuredContent
+            check("SSH: FPGA diagnostics read no registers", fpga["registers_read"] is False)
+            probe = (await call(session, "rp_connection_probe")).structuredContent
+            check("SSH: app still up afterwards", probe["reachable"] is True)
+
+
 async def capture(config: Settings, frequency: int, rate: int) -> np.ndarray:
     service = Service(config)
     await asyncio.sleep(CONTROL_SETTLE_S)
@@ -212,6 +249,7 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True)
     parser.add_argument("--i-own-this-idle-board", action="store_true", required=True)
+    parser.add_argument("--ssh-user", default="")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
 
@@ -221,6 +259,8 @@ async def main() -> int:
         await asyncio.sleep(4)
         await tools_rx_disabled(args.host)
         await tools_with_app_up(args.host)
+        if args.ssh_user:
+            await tools_over_ssh(args.host, args.ssh_user)
         await signal_chain(args.host)
     finally:
         app(args.host, "stop")

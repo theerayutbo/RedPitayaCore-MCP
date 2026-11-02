@@ -12,6 +12,7 @@ from redpitayacore_mcp.rx_order import BLOCK_ORDER, BLOCK_SAMPLES, restore_block
 from redpitayacore_mcp.transport import (
     HTTP_PATHS,
     RX_REOPEN_GUARD_S,
+    SSH_COMMANDS,
     DeviceHTTP,
     RxConnection,
     _ssh_command,
@@ -119,6 +120,12 @@ async def test_rx_bad_stream_cleans_both_sockets(failure):
         with pytest.raises((ConnectionError, TimeoutError, ValueError)):
             await rx.read(1)
         assert not rx.connected
+
+
+def test_ssh_commands_do_not_read_device_identifiers_in_full():
+    assert not any(command.startswith("cat /tmp/sysinfo.json") for command in SSH_COMMANDS.values())
+    assert SSH_COMMANDS["board_model"] == "grep '^\"name\"' /tmp/sysinfo.json"
+    assert "|| echo absent" in SSH_COMMANDS["loaded_image_label"]
 
 
 def _block(first: int) -> bytes:

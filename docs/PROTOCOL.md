@@ -110,6 +110,10 @@ Measured on a STEMlab 125-14 on 2026-11-02.
   order needs `raw`.
 - **Role release is not instant.** Reconnecting 0 ms after closing RX was dropped and
   50 ms worked, so the client waits 200 ms before reopening.
+- **Board identity comes from `/tmp/sysinfo.json`.** OS 3.00 has no devicetree `model`
+  node. The file also holds the MAC and FPGA DNA, so the server reads only its `name`
+  line. Its `/tmp/loaded_fpga.inf` label is deleted by the SDR app's `fpga.sh`, so
+  `absent` is normal while that app is loaded.
 - **A closed port answers with a TCP refusal** when the board is up and the app is
   stopped. `rp_connection_probe` reports `failure` as `refused`, `timeout` or
   `network_error`.

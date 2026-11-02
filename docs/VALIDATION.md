@@ -6,7 +6,7 @@ below. Hardware results for v0.2.1 are in [Hardware validation](#hardware-valida
 
 | Check | Result |
 | --- | --- |
-| Pytest | 136 passed at v0.2.1, including real MCP stdio clients and the 25-tool surface |
+| Pytest | 137 passed at v0.2.1, including real MCP stdio clients and the 25-tool surface |
 | Network fixtures | Loopback TCP and HTTP only; no Red Pitaya contacted |
 | Ruff lint and formatting | Passed |
 | Strict mypy | Passed for all source files |
@@ -40,11 +40,11 @@ The first published revision `e527bda` passed all four jobs (Python 3.11, 3.12,
 
 ## Hardware validation
 
-Release 0.2.1 was tested on a real STEMlab 125-14 on 2026-11-02, from macOS over a
-direct Ethernet link. `info.json` reported `SDR transceiver` 1.0-20260302, revision
-`cbecbdd4`. The OS version was not read, because SSH was not configured.
+Release 0.2.1 was tested on a real board on 2026-11-02, from macOS over a direct
+Ethernet link. Read from the board: `STEMlab 125-14 v1.0`, Red Pitaya OS 3.00-57
+(Ubuntu 24.04.4), SDR bundle `cbecbdd4`, and `SDR transceiver` 1.0-20260302.
 
-`scripts/live_acceptance.py` passed 42 of 42 checks. Tool checks drive the real server
+`scripts/live_acceptance.py --ssh-user root` passed 63 of 63 checks. Tool checks drive the real server
 through an MCP stdio client. The 13 signal checks call the same service code in
 process, because `rp_rx_read` returns at most 32 preview samples. No TX role was opened and no signal source
 was connected for the test. The test tone is the ADC's own DC offset, which appears at
@@ -59,7 +59,8 @@ was connected for the test. The test tone is the ADC's own DC offset, which appe
 | `rp_connection_status` | Reported the open session |
 | Diagnostics during RX | RX reads continued after HTTP and probe calls in one short check |
 | `rp_app_lifecycle` | Dry run did not execute. Live stop was refused |
-| `rp_system_diagnostics`, `rp_fpga_diagnostics` | Reported SSH off. SSH itself was not exercised |
+| `rp_system_diagnostics` | All 12 fixed commands ran over key login with a pinned host key. No MAC or DNA returned |
+| `rp_fpga_diagnostics` | Ran over SSH. Reported that no registers were read. FPGA state `operating` |
 
 | Rate, S/s | Tuned to, Hz | Tone measured, Hz | Worst of 7 fs/8 spurs, dBc |
 | --- | --- | --- | --- |
@@ -75,19 +76,22 @@ detect the defect. Tone frequency confirms tuning and rate at these frequencies 
 The spur figures cover only the seven tone + k * fs/8 frequencies, not all spurs, and
 exclude block 0.
 
-Testing on the board found three defects in 0.2.0, now fixed:
+Testing on the board found five defects in 0.2.0, now fixed:
 
 - `rp_device_diagnostics` requested `/bazaar` URLs that stopped the running app, so a
   tool marked read-only was not.
 - RX returned samples in the wrong order, with no error.
 - Reconnecting immediately after disconnect failed.
+- `board_model` read a devicetree file that OS 3.00 does not have.
+- `loaded_image_label` reported failure for a file the SDR app deletes on purpose.
 
 ## What remains unverified
 
-- SSH diagnostics, including `board_model`, process names, FPGA manager state and file
-  hashes, have not been run on a board.
-- One board on one day is the whole sample. The OS version was not read, and other
-  images may need `RP_RX_SAMPLE_ORDER=raw`.
+- One board on one day is the whole sample. Other images may need
+  `RP_RX_SAMPLE_ORDER=raw`, and other OS versions may lay out SSH evidence differently.
+- SSH evidence is text from the board. It does not prove the active FPGA image or that
+  the hashes match a trusted build.
+- The FPGA tools that need Vivado were not run. No Vivado installation was available.
 - RX was checked with the ADC's DC offset at low frequencies. RF input at HF, gain,
   noise floor and frequency accuracy were not measured.
 - Streaming continuity at the higher rates was not measured. Reads are bounded
@@ -97,8 +101,7 @@ Testing on the board found three defects in 0.2.0, now fixed:
 - Claude Code's registration instructions were checked against official docs;
   automated integration uses the official SDK's actual stdio client. No local
   Claude Code configuration was changed during development.
-- Live SSH authentication, filesystem paths, app metadata availability and
-  FPGA manager state require device acceptance. Missing evidence is reported
+- SSH evidence on other boards and OS versions requires device acceptance. Missing evidence is reported
   unavailable; labels and sysfs state do not establish image identity.
 - Live app lifecycle cannot execute. Starting the app can load a bitstream and
   overlay; stopping it acts on the global current controller.

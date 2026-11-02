@@ -24,11 +24,15 @@ RX_REOPEN_GUARD_S = 0.2
 RX_SETTLE_S = 0.05
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
-    "board_model": "cat /sys/firmware/devicetree/base/model",
+    # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
+    # devicetree model node.
+    "board_model": "grep '^\"name\"' /tmp/sysinfo.json",
+    "ecosystem_version": "cat /opt/redpitaya/version.txt",
     "app_info": "cat /opt/redpitaya/www/apps/sdr_transceiver/info/info.json",
     "process_names": "ps -eo comm=",
     "fpga_state": "cat /sys/class/fpga_manager/fpga0/state",
-    "loaded_image_label": "cat /tmp/loaded_fpga.inf",
+    # The SDR app's fpga.sh deletes this file, so its absence is normal while the app is loaded.
+    "loaded_image_label": "cat /tmp/loaded_fpga.inf 2>/dev/null || echo absent",
     "fpga_flags": "cat /sys/class/fpga_manager/fpga0/flags",
     "overlay_inventory": "ls -1 /configfs/device-tree/overlays",
     "installed_bitstream_sha256": "sha256sum /opt/redpitaya/www/apps/sdr_transceiver/fpga.bit.bin",
