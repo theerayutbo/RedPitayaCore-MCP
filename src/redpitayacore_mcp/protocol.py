@@ -34,7 +34,9 @@ def rx_rate(sample_rate: int) -> bytes:
 def decode_iq(raw: bytes) -> list[tuple[float, float]]:
     if not raw or len(raw) % 8 or len(raw) > MAX_SAMPLES * 8:
         raise ValueError("Expected 1 to 8192 complete float32 I/Q sample pairs")
-    samples = list(struct.iter_unpack("<ff", raw))
-    if any(not math.isfinite(value) for sample in samples for value in sample):
+    values = struct.unpack(f"<{len(raw) // 4}f", raw)
+    # Float32 values cannot overflow a double sum of this length, so only NaN or inf input
+    # can make it non-finite. Checking each value capped RX near 970 kS/s.
+    if not math.isfinite(sum(values)):
         raise ValueError("Non-finite IQ data: check the app and protocol compatibility")
-    return samples
+    return list(zip(values[::2], values[1::2], strict=True))

@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+import socket
 import struct
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -125,7 +126,7 @@ async def test_rx_bad_stream_cleans_both_sockets(failure):
 def test_ssh_commands_do_not_read_device_identifiers_in_full():
     assert not any(command.startswith("cat /tmp/sysinfo.json") for command in SSH_COMMANDS.values())
     assert SSH_COMMANDS["board_model"] == "grep '^\"name\"' /tmp/sysinfo.json"
-    assert "|| echo absent" in SSH_COMMANDS["loaded_image_label"]
+    assert "else echo absent" in SSH_COMMANDS["loaded_image_label"]
 
 
 def _block(first: int) -> bytes:
@@ -139,6 +140,45 @@ def test_block_order_is_a_nontrivial_permutation():
     assert sum(slot != position for slot, position in enumerate(BLOCK_ORDER)) == 2032
     with pytest.raises(ValueError, match="16384"):
         restore_block(b"short")
+
+
+def test_restore_block_inverts_the_board_order_exactly():
+    block = b"".join(struct.pack("<II", slot, ~slot & 0xFFFFFFFF) for slot in range(BLOCK_SAMPLES))
+    restored = struct.unpack(f"<{BLOCK_SAMPLES * 2}I", restore_block(block))
+    for slot, position in enumerate(BLOCK_ORDER):
+        assert restored[position * 2] == slot
+        assert restored[position * 2 + 1] == ~slot & 0xFFFFFFFF
+
+
+@pytest.mark.parametrize("refused_role", [0, 1])
+async def test_connect_fails_when_the_server_refuses_a_role(refused_role):
+    async def handler(reader, writer):
+        role = struct.unpack("<I", await reader.readexactly(4))[0]
+        if role != refused_role:
+            await reader.read()
+
+    async with tcp_server(handler) as config:
+        rx = RxConnection(config)
+        with pytest.raises(ConnectionError, match="another client"):
+            await rx.connect(7_100_000, 50_000)
+        assert not rx.connected
+
+
+@pytest.mark.parametrize("refused_role", [0, 1])
+async def test_connect_fails_when_a_role_is_refused_by_reset(refused_role):
+    async def handler(reader, writer):
+        role = struct.unpack("<I", await reader.readexactly(4))[0]
+        if role == refused_role:
+            linger = struct.pack("ii", 1, 0)
+            writer.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        else:
+            await reader.read()
+
+    async with tcp_server(handler) as config:
+        rx = RxConnection(config)
+        with pytest.raises(ConnectionError, match="another client"):
+            await rx.connect(7_100_000, 50_000)
+        assert not rx.connected
 
 
 async def test_rx_restores_order_across_fragments_reads_and_blocks():

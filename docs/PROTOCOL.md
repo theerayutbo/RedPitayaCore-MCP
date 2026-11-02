@@ -114,6 +114,9 @@ Measured on a STEMlab 125-14 on 2026-11-02.
   node. The file also holds the MAC and FPGA DNA, so the server reads only its `name`
   line. Its `/tmp/loaded_fpga.inf` label is deleted by the SDR app's `fpga.sh`, so
   `absent` is normal while that app is loaded.
+- **A busy role is refused by closing the socket.** No ACK exists, so a client sees only
+  the close. Reads through Python keep real time up to 100,000 S/s. The board and link
+  also kept 1,248,000 S/s to a raw socket reader for 6 s.
 - **A closed port answers with a TCP refusal** when the board is up and the app is
   stopped. `rp_connection_probe` reports `failure` as `refused`, `timeout` or
   `network_error`.

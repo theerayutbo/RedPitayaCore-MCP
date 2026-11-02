@@ -32,7 +32,8 @@ SSH_COMMANDS = {
     "process_names": "ps -eo comm=",
     "fpga_state": "cat /sys/class/fpga_manager/fpga0/state",
     # The SDR app's fpga.sh deletes this file, so its absence is normal while the app is loaded.
-    "loaded_image_label": "cat /tmp/loaded_fpga.inf 2>/dev/null || echo absent",
+    "loaded_image_label": "if [ -e /tmp/loaded_fpga.inf ]; then cat /tmp/loaded_fpga.inf; "
+    "else echo absent; fi",
     "fpga_flags": "cat /sys/class/fpga_manager/fpga0/flags",
     "overlay_inventory": "ls -1 /configfs/device-tree/overlays",
     "installed_bitstream_sha256": "sha256sum /opt/redpitaya/www/apps/sdr_transceiver/fpga.bit.bin",
@@ -251,11 +252,20 @@ class RxConnection:
                 max(0.0, self.closed_at + RX_REOPEN_GUARD_S - asyncio.get_running_loop().time())
             )
         try:
-            _, self.control = await self._open_role("control")
+            control_reader, self.control = await self._open_role("control")
             self.control.write(frequency + rate)
             await asyncio.wait_for(self.control.drain(), self.config.timeout)
             await asyncio.sleep(RX_SETTLE_S)
             self.reader, self.data = await self._open_role("data")
+            await asyncio.sleep(RX_SETTLE_S)
+            # The server sends no ACK. It closes a socket whose role has an owner, and a control
+            # socket gets no data, so a closed socket is the only refusal a client can see. Unread
+            # commands can turn that close into a reset, which sets an exception and not EOF.
+            if any(
+                reader.at_eof() or reader.exception() is not None
+                for reader in (control_reader, self.reader)
+            ):
+                raise ConnectionError("RX role refused; another client owns the app")
         except BaseException:
             await self.close()
             raise

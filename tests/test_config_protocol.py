@@ -93,6 +93,11 @@ def test_iq_format_and_bad_samples():
         decode_iq(b"123")
     with pytest.raises(ValueError):
         decode_iq(struct.pack("<2f", math.nan, 1))
+    for pair in ((math.inf, 1), (1, -math.inf), (math.inf, -math.inf)):
+        with pytest.raises(ValueError):
+            decode_iq(struct.pack("<2f", *pair))
+    largest = struct.unpack("<f", struct.pack("<I", 0x7F7FFFFF))[0]
+    assert len(decode_iq(struct.pack("<2f", largest, largest) * 8192)) == 8192
 
 
 def test_rx_sample_order_defaults_to_the_stock_image_and_rejects_unknown_values():

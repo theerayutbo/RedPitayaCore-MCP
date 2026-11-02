@@ -231,9 +231,12 @@ device, OS, application, build, FPGA-image, or protocol identity.
 **Tested on real hardware.** Release 0.2.1 passed 63 of 63 acceptance checks on a
 STEMlab 125-14 v1.0 running Red Pitaya OS 3.00-57 and `sdr_transceiver` 1.0-20260302 on
 2026-11-02: HTTP and SSH diagnostics, TCP probe, RX at all six sample rates, disconnect
-and reconnect, and four safety refusals. TX is not part of this server, and local Vivado
-builds were not tested. See [docs/VALIDATION.md](docs/VALIDATION.md) for the results and limits,
-and run `scripts/live_acceptance.py` to repeat them on your own idle board.
+and reconnect, and four safety refusals. It also passed 134 of 134 extended checks: the
+local FPGA tools, sustained RX up to 100,000 S/s, and recovery from failures. Above that
+rate, reads work but continuity is not guaranteed. TX is not part of this server, and real
+Vivado builds were not tested. See [docs/VALIDATION.md](docs/VALIDATION.md) for the results
+and limits. To repeat them on your own idle board, run `scripts/live_acceptance.py` and
+`scripts/extended_acceptance.py`.
 
 ## Offline FPGA quick start
 
