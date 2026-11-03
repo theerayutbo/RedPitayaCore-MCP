@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 REVISION = "cbecbdd45735a04ad6ccb0094a242a1f820665b8"
 SOURCE = (
     f"https://github.com/pavel-demin/red-pitaya-notes/blob/{REVISION}/"
