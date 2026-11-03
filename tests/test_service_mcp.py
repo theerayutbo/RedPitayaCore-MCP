@@ -105,28 +105,17 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_rx_connect",
                 "rp_rx_read",
                 "rp_rx_disconnect",
-                "rp_fpga_capabilities",
                 "rp_fpga_diagnostics",
                 "rp_fpga_register_map",
                 "rp_fpga_register_plan",
                 "rp_fpga_hardware_plan",
-                "rp_fpga_project_info",
-                "rp_fpga_read_source",
-                "rp_fpga_write_source",
-                "rp_fpga_inspect_artifact",
-                "rp_fpga_read_report",
-                "rp_fpga_manifest",
-                "rp_fpga_build",
-                "rp_fpga_build_status",
-                "rp_fpga_build_cancel",
-                "rp_fpga_build_report",
-                "rp_fpga_ila_plan",
             }
             assert not any("tx" in name for name in names)
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
             assert annotations["rp_rx_read"].readOnlyHint is False
             assert annotations["rp_device_diagnostics"].readOnlyHint is True
+            assert annotations["rp_fpga_diagnostics"].readOnlyHint is True
             profile = await session.call_tool("rp_profile", {})
             assert not profile.isError
             assert profile.structuredContent["mode"] == "mock"
