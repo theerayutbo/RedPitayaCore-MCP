@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "redpitayacore-mcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "FPGA development and safe Red Pitaya SDR diagnostics for Claude Code"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["mcp>=1.30,<2", "httpx>=0.28.1,<1"]
+dependencies = ["mcp>=1.30,<2", "httpx>=0.28.1,<1", "numpy>=2,<3"]
 
 [project.scripts]
 redpitayacore-mcp = "redpitayacore_mcp.server:main"

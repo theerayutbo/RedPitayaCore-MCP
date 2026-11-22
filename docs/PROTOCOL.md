@@ -15,10 +15,11 @@ begins with one unsigned 32-bit little-endian role word:
 | ---: | --- | --- |
 | `0` | RX control | Implemented |
 | `1` | RX data | Implemented |
-| `2` | TX control | Absent |
-| `3` | TX data | Absent |
+| `2` | TX control | Implemented |
+| `3` | TX data | Implemented |
 
-The project has no encoder or connection path for roles 2 and 3.
+Port 1001 is channel 1 (IN1 and OUT1) and port 1002 is channel 2 (IN2 and OUT2).
+Set `RP_PORT` to choose. Each port has its own four roles.
 
 Opening role 0 resets RX tuning and rate in the upstream server. Opening role 1
 resets its RX FIFO. Closing the RX control connection resets tuning again. These
@@ -58,8 +59,29 @@ uint32_le((1 << 28) | rate_index)
 | 4 | 500,000 |
 | 5 | 1,250,000 |
 
-No generic command encoder is exposed. In particular, this project does not
-encode PTT, TX configuration, or unknown command classes.
+No generic command encoder is exposed. This project does not encode unknown
+command classes.
+
+## TX
+
+Role 2 takes the same frequency and rate words as role 0, plus two more:
+
+| Word | Effect |
+| ---: | --- |
+| `2 << 28` | PTT pin high |
+| `3 << 28` | PTT pin low |
+
+The server drops PTT when role 2 opens and when it closes. PTT is only a pin:
+OUT is driven by samples, with or without it.
+
+Role 3 takes interleaved little-endian float32 pairs, in whole 16384-byte blocks
+(2048 samples). The server calls `recv` once per block without `MSG_WAITALL` and
+then copies 16384 bytes, so a short read would corrupt the stream. This client
+stays at least four blocks and 0.1 s ahead, so data is already waiting for each
+`recv`. That also bounds how much tone is queued when a burst stops.
+
+TX samples need no reordering, unlike RX. That is a measurement: looped-back tones
+show no phase steps or block-rate spurs. The cause was not studied.
 
 ## RX sample data
 

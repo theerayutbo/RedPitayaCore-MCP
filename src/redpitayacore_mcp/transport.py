@@ -5,13 +5,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import socket
 from typing import Any
 
 import httpx
+import numpy as np
 
 from .config import Settings
-from .protocol import MAX_SAMPLES, decode_iq, rx_frequency, rx_rate, rx_role
+from .protocol import (
+    MAX_SAMPLES,
+    PTT_HIGH,
+    PTT_LOW,
+    TX_BLOCK_SAMPLES,
+    decode_iq_array,
+    ramp_blocks,
+    rx_frequency,
+    rx_rate,
+    rx_role,
+    tx_frequency,
+    tx_rate,
+    tx_role,
+)
 from .rx_order import BLOCK_BYTES, restore_block
 
 # Any GET under /bazaar reaches the board's app controller. Measured on a STEMlab 125-14,
@@ -22,6 +37,17 @@ MAX_RESPONSE = 65536
 RX_REOPEN_GUARD_S = 0.2
 # Tuning settles before the data role resets the FIFO.
 RX_SETTLE_S = 0.05
+# The server's short-read hazard needs data waiting in its socket, so stay at least four blocks
+# ahead. RP_TX_LEAD_S sets the lead in seconds, which must exceed the host's worst stall.
+TX_MIN_LEAD_BLOCKS = 4
+# Silence queued before the server starts reading TX data. See TxBurst._open_data.
+TX_PREROLL_BLOCKS = 2
+TX_FLUSH_BLOCKS = 3
+# Silence sent ahead of the rising edge, so the board's buffer fills before the tone starts. At
+# 1.25 MS/s, none left 2 of 5 starts chopped (-28 dBc beside the tone); 20 or 50 ms left none.
+TX_START_SILENCE_S = 0.05
+# The board FIFO holds up to this many samples behind the socket before the DAC.
+TX_FIFO_SAMPLES = 6144
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
     # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
@@ -213,6 +239,22 @@ async def read_system(config: Settings) -> dict[str, Any]:
     }
 
 
+async def _open_selector(
+    config: Settings, selector: bytes
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    host = _require_live(config)
+    writer = None
+    try:
+        async with asyncio.timeout(config.timeout):
+            reader, writer = await asyncio.open_connection(host, config.port, family=socket.AF_INET)
+            writer.write(selector)
+            await writer.drain()
+        return reader, writer
+    except BaseException:
+        await _close_writer(writer)
+        raise
+
+
 class RxConnection:
     def __init__(self, config: Settings):
         self.config = config
@@ -227,19 +269,7 @@ class RxConnection:
         return self.control is not None and self.data is not None
 
     async def _open_role(self, role: str) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        host = _require_live(self.config)
-        writer = None
-        try:
-            async with asyncio.timeout(self.config.timeout):
-                reader, writer = await asyncio.open_connection(
-                    host, self.config.port, family=socket.AF_INET
-                )
-                writer.write(rx_role(role))
-                await writer.drain()
-            return reader, writer
-        except BaseException:
-            await _close_writer(writer)
-            raise
+        return await _open_selector(self.config, rx_role(role))
 
     async def connect(self, frequency_hz: int, sample_rate: int) -> None:
         if not self.config.allow_rx:
@@ -271,6 +301,10 @@ class RxConnection:
             raise
 
     async def read(self, count: int) -> list[tuple[float, float]]:
+        pairs = (await self.read_array(count)).view(np.float32).reshape(-1, 2).tolist()
+        return [(i, q) for i, q in pairs]
+
+    async def read_array(self, count: int) -> np.ndarray:
         if type(count) is not int or not 1 <= count <= MAX_SAMPLES:
             raise ValueError("sample_count must be an integer from 1 to 8192")
         if not self.connected or self.reader is None:
@@ -278,7 +312,7 @@ class RxConnection:
         try:
             async with asyncio.timeout(self.config.timeout):
                 raw = await self._read_bytes(self.reader, count * 8)
-            return decode_iq(raw)
+            return decode_iq_array(raw)
         except asyncio.IncompleteReadError as error:
             await self.close()
             raise ConnectionError(
@@ -308,3 +342,217 @@ class RxConnection:
         if writers:
             self.closed_at = asyncio.get_running_loop().time()
         await asyncio.gather(*(_wait_writer_closed(writer) for writer in writers))
+
+
+class TxBurst:
+    """One bounded, self-ending burst. Nothing here can transmit without an end time.
+
+    Closing TX control makes the server drop PTT and retune to 600 kHz at 100 kS/s at once, while
+    samples already queued keep playing. So TX control stays open until the queue has played out,
+    on every path this process survives. If the process dies, the queued tail goes out near
+    600 kHz: measured 0.12 to 0.30 s, and no client can prevent it. A client that stalls with
+    control open leaves PTT high, and OUT falls silent when the samples run out.
+    """
+
+    def __init__(self, config: Settings):
+        self.config = config
+        self.task: asyncio.Task[None] | None = None
+        self.stop_requested = asyncio.Event()
+        self.starting = False
+        self.blocks_sent = 0
+        self.outcome = "never_started"
+        self.ptt_high = False
+        self.closed_at: float | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.starting or (self.task is not None and not self.task.done())
+
+    async def start(
+        self, frequency_hz: int, sample_rate: int, block: bytes, blocks: int, key_ptt: bool
+    ) -> None:
+        if not self.config.allow_tx:
+            raise PermissionError("TX is disabled; operator must set RP_ALLOW_TX=true")
+        words = tx_frequency(frequency_hz) + tx_rate(sample_rate)
+        if len(block) != TX_BLOCK_SAMPLES * 8:
+            raise ValueError("TX blocks must hold exactly 2048 samples")
+        if type(blocks) is not int or blocks < 1:
+            raise ValueError("A burst needs at least one whole block")
+        if self.active:
+            raise ValueError("TX burst already running; stop it first")
+        self.starting = True
+        self.blocks_sent = 0
+        self.outcome = "starting"
+        control = data = None
+        try:
+            if self.closed_at is not None:
+                await asyncio.sleep(
+                    max(0.0, self.closed_at + RX_REOPEN_GUARD_S - asyncio.get_running_loop().time())
+                )
+            control_reader, control = await _open_selector(self.config, tx_role("control"))
+            control.write(words)
+            await asyncio.wait_for(control.drain(), self.config.timeout)
+            await asyncio.sleep(RX_SETTLE_S)
+            data_reader, data = await self._open_data()
+            await asyncio.sleep(RX_SETTLE_S)
+            if any(
+                reader.at_eof() or reader.exception() is not None
+                for reader in (control_reader, data_reader)
+            ):
+                raise ConnectionError("TX role refused; another client owns the app")
+            if key_ptt:
+                self.ptt_high = True
+                control.write(PTT_HIGH)
+                await asyncio.wait_for(control.drain(), self.config.timeout)
+                await asyncio.sleep(RX_SETTLE_S)
+        except BaseException:
+            # No tone is queued yet, and closing TX control makes the server drop PTT.
+            self.ptt_high = False
+            self.starting = False
+            self.outcome = "start_failed"
+            writers = [writer for writer in (data, control) if writer is not None]
+            for writer in writers:
+                writer.close()
+            self.closed_at = asyncio.get_running_loop().time()
+            await asyncio.gather(*(_wait_writer_closed(writer) for writer in writers))
+            raise
+        self.stop_requested = asyncio.Event()
+        self.outcome = "running"
+        self.task = asyncio.create_task(
+            self._feed(control, control_reader, data, block, sample_rate, blocks),
+            name="rp-tx-burst",
+        )
+        self.starting = False
+
+    async def _open_data(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open TX data with its first block already waiting at the board.
+
+        The server calls recv once and copies 16384 bytes. A first read that comes back short
+        sends uninitialised stack to the DAC, measured as a pulse about 20 times a 0.1 full-scale
+        tone. Its accept loop is one thread that blocks reading a new socket's role word, so an
+        idle socket holds it while the kernel queues the real connection and its first blocks.
+        Closing the idle socket then releases it, and the first recv finds a whole block.
+        """
+        host = _require_live(self.config)
+        async with asyncio.timeout(self.config.timeout):
+            _, gate = await asyncio.open_connection(host, self.config.port, family=socket.AF_INET)
+        writer = None
+        try:
+            await asyncio.sleep(RX_SETTLE_S)
+            silence = bytes(TX_BLOCK_SAMPLES * 8) * TX_PREROLL_BLOCKS
+            reader, writer = await _open_selector(self.config, tx_role("data") + silence)
+            await asyncio.sleep(RX_SETTLE_S)
+        except BaseException:
+            # Only silence is queued, so the data socket can go at once. Leaving it open would
+            # hold the role until this process exits.
+            if writer is not None:
+                writer.close()
+            raise
+        finally:
+            # No await after the data socket exists, so a cancellation cannot orphan it.
+            gate.close()
+        return reader, writer
+
+    async def _feed(
+        self,
+        control: asyncio.StreamWriter,
+        control_reader: asyncio.StreamReader,
+        data: asyncio.StreamWriter,
+        block: bytes,
+        sample_rate: int,
+        blocks: int,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        block_s = TX_BLOCK_SAMPLES / sample_rate
+        fifo_s = TX_FIFO_SAMPLES / sample_rate
+        # Up to the FIFO's worth of what has been sent sits on the board, not in the socket, and
+        # the server needs a whole block in the socket for each read. So RP_TX_LEAD_S is the
+        # stall the socket can ride out, on top of those.
+        lead_s = max(TX_MIN_LEAD_BLOCKS * block_s, self.config.tx_lead_s + fifo_s + block_s)
+        rising, falling, single = ramp_blocks(block, sample_rate)
+        silence = bytes(len(block))
+        # When the DAC runs out of what has been sent. A stall moves this later, so pacing and the
+        # PTT tail both follow what the DAC can really have played.
+        dac_end = loop.time() + TX_PREROLL_BLOCKS * block_s
+        outcome = "failed"
+
+        def queue(payload: bytes) -> None:
+            nonlocal dac_end
+            data.write(payload)
+            dac_end = max(loop.time(), dac_end) + block_s
+
+        lead_in = math.ceil(TX_START_SILENCE_S / block_s)
+        # Twice the burst's own length, so host stalls end it only when far beyond normal.
+        budget = 2 * (TX_PREROLL_BLOCKS + lead_in + blocks + TX_FLUSH_BLOCKS + 1) * block_s
+        budget += 2 * self.config.timeout + 1
+        try:
+            try:
+                async with asyncio.timeout(budget):
+                    for _ in range(lead_in):
+                        queue(silence)
+                        await data.drain()
+                    while self.blocks_sent < blocks and not self.stop_requested.is_set():
+                        if control_reader.at_eof() or control_reader.exception() is not None:
+                            raise ConnectionError("TX control lost; the server has retuned")
+                        ahead = dac_end - loop.time()
+                        if ahead >= lead_s:
+                            with contextlib.suppress(TimeoutError):
+                                await asyncio.wait_for(
+                                    self.stop_requested.wait(), max(0.0005, ahead - lead_s)
+                                )
+                            continue
+                        if blocks == 1:
+                            payload = single
+                        elif self.blocks_sent == 0:
+                            payload = rising
+                        elif self.blocks_sent == blocks - 1:
+                            payload = falling
+                        else:
+                            payload = block
+                        queue(payload)
+                        await data.drain()
+                        self.blocks_sent += 1
+                    if self.stop_requested.is_set() and 0 < self.blocks_sent < blocks:
+                        # Still within the burst's block budget, and ends without a hard edge.
+                        queue(falling)
+                        await data.drain()
+                        self.blocks_sent += 1
+                    outcome = "stopped" if self.stop_requested.is_set() else "completed"
+                    for _ in range(TX_FLUSH_BLOCKS):
+                        queue(silence)
+                    await data.drain()
+            except (OSError, TimeoutError) as error:
+                outcome = f"failed: {type(error).__name__}"
+                if data.transport is not None:
+                    data.transport.abort()
+            await asyncio.sleep(max(0.0, dac_end - loop.time()) + fifo_s)
+            if self.ptt_high:
+                control.write(PTT_LOW)
+                await asyncio.wait_for(control.drain(), self.config.timeout)
+        except (OSError, TimeoutError) as error:
+            outcome = f"failed: {type(error).__name__}"
+        except asyncio.CancelledError:
+            # Shutdown or Ctrl-C. Drop what the host still holds, then keep TX control until the
+            # board's queue has played, or closing it would move that tone to 600 kHz. A second
+            # cancellation ends the wait.
+            outcome = "aborted"
+            if data.transport is not None:
+                data.transport.abort()
+            try:
+                await asyncio.sleep(max(0.0, dac_end - loop.time()) + fifo_s)
+            finally:
+                raise
+        finally:
+            self.outcome = outcome
+            self.ptt_high = False
+            # Both closes happen before any await, so cancellation cannot keep one open.
+            data.close()
+            control.close()
+            self.closed_at = loop.time()
+            await asyncio.gather(_wait_writer_closed(data), _wait_writer_closed(control))
+
+    async def stop(self) -> None:
+        """Ask the burst to end and wait for it. Cancelling this wait leaves the burst ending."""
+        self.stop_requested.set()
+        if self.task is not None:
+            await asyncio.wait({self.task})

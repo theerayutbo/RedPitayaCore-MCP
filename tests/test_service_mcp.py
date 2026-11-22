@@ -19,7 +19,8 @@ async def test_mock_workflow_never_uses_hardware(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
     service = Service(Settings())
     assert service.profile()["mode"] == "mock"
-    assert service.profile()["mcp_tx_path_present"] is False
+    assert service.profile()["mcp_tx_path_present"] is True
+    assert service.profile()["live_tx_enabled"] is False
     assert service.profile()["hardware_tx_state"] == "unknown_not_read"
     assert "tx_enabled" not in service.status()
     assert (await service.diagnostics())["simulated"]
@@ -105,6 +106,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_rx_connect",
                 "rp_rx_read",
                 "rp_rx_disconnect",
+                "rp_tx_start",
+                "rp_tx_status",
+                "rp_tx_stop",
                 "rp_fpga_capabilities",
                 "rp_fpga_diagnostics",
                 "rp_fpga_register_map",
@@ -122,7 +126,6 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_fpga_build_report",
                 "rp_fpga_ila_plan",
             }
-            assert not any("tx" in name for name in names)
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
             assert annotations["rp_rx_read"].readOnlyHint is False

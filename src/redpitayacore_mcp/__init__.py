@@ -1,3 +1,3 @@
-"""RedPitayaCore-MCP: verified receive-only access, with mock mode by default."""
+"""RedPitayaCore-MCP: RX, bounded TX bursts and diagnostics, with mock mode by default."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

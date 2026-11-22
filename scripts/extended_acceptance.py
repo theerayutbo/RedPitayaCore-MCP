@@ -38,7 +38,7 @@ from redpitayacore_mcp import __version__
 from redpitayacore_mcp.config import Settings
 from redpitayacore_mcp.protocol import RATES
 from redpitayacore_mcp.service import Service
-from redpitayacore_mcp.transport import probe_tcp, read_system
+from redpitayacore_mcp.transport import RX_REOPEN_GUARD_S, probe_tcp, read_system
 
 REPO = Path(__file__).resolve().parents[1]
 APP_DIR = "/opt/redpitaya/www/apps/sdr_transceiver"
@@ -114,8 +114,8 @@ async def plans_and_profile(pinned_source: Path | None) -> None:
         profile = await data(client, "rp_profile")
         check("profile: version", profile["server_version"] == __version__, __version__)
         check(
-            "profile: no TX path",
-            profile["tx_supported"] is False and profile["mcp_tx_path_present"] is False,
+            "profile: TX present but off unless the operator enables it",
+            profile["mcp_tx_path_present"] is True and profile["live_tx_enabled"] is False,
         )
         caps = await data(client, "rp_fpga_capabilities")
         check(
@@ -198,11 +198,13 @@ async def plans_and_profile(pinned_source: Path | None) -> None:
                 f"ILA plan refuses {label}", await refused(client, "rp_fpga_ila_plan", **arguments)
             )
 
-        check("no TX tool exists", await refused(client, "rp_tx_enable"))
+        check("unknown tool is refused", await refused(client, "rp_tx_enable"))
         tools = (await client.list_tools()).tools
         check(
-            "25 tools, none named for TX",
-            len(tools) == 25 and not any("tx" in t.name for t in tools),
+            "28 tools, of which 3 are TX",
+            len(tools) == 28
+            and sorted(t.name for t in tools if t.name.startswith("rp_tx_"))
+            == ["rp_tx_start", "rp_tx_status", "rp_tx_stop"],
         )
 
 
@@ -402,6 +404,8 @@ def phase_jumps(samples: np.ndarray, frequency: int, rate: int) -> tuple[int, fl
 
 async def stream(service: Service, frequency: int, rate: int, seconds: float) -> dict[str, float]:
     """Read in one session for seconds; count phase jumps of the ADC-offset tone."""
+    # Each call gets a fresh Service, whose reopen guard knows nothing of the last session.
+    await asyncio.sleep(RX_REOPEN_GUARD_S)
     await service.connect(frequency, rate, True)
     chunks: list[np.ndarray] = []
     try:
