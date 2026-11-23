@@ -7,11 +7,21 @@ import math
 from typing import Any
 
 import httpx
+import numpy as np
 
 from . import __version__
 from .config import Settings
-from .protocol import MAX_SAMPLES, RATES, rx_frequency, rx_rate
-from .transport import HTTP_PATHS, DeviceHTTP, RxConnection, probe_tcp, read_system
+from .protocol import (
+    MAX_SAMPLES,
+    RATES,
+    TX_BLOCK_SAMPLES,
+    rx_frequency,
+    rx_rate,
+    tone_block,
+    tx_frequency,
+    tx_rate,
+)
+from .transport import HTTP_PATHS, DeviceHTTP, RxConnection, TxBurst, probe_tcp, read_system
 
 TARGET = {
     "board": "STEMlab 125-14",
@@ -26,11 +36,24 @@ SIDE_EFFECTS = (
     "Exclusive use is required. No acknowledgement or hardware setting readback exists."
 )
 
+TX_SIDE_EFFECTS = (
+    "Drives the OUT connector of this channel for a bounded time. Connect a dummy load, a "
+    "cabled loop or an attenuator, never an antenna without a licence for the frequency. "
+    "Amplitude is digital full scale, not calibrated power. TX control and data reset TX "
+    "tuning, rate, FIFO and PTT, and exclusive use is required."
+)
+# Output falls off well before this fraction of the sample rate.
+TX_MAX_OFFSET_FRACTION = 0.4
+
 
 class Service:
     def __init__(self, config: Settings):
         self.config = config
         self.rx = RxConnection(config)
+        self.tx = TxBurst(config)
+        self.tx_lock = asyncio.Lock()
+        self.tx_requested: dict[str, Any] | None = None
+        self.mock_tx_ends: float | None = None
         self.lock = asyncio.Lock()
         self.mock_open = False
         self.mock_running = True
@@ -44,10 +67,16 @@ class Service:
             "mode": self.config.mode,
             "target": TARGET.copy(),
             "hardware_verified": False,
-            "tx_supported": False,
-            "mcp_tx_path_present": False,
+            "tx_supported": True,
+            "mcp_tx_path_present": True,
             "hardware_tx_state": "unknown_not_read",
             "live_rx_enabled": self.config.allow_rx,
+            "live_tx_enabled": self.config.allow_tx,
+            "tx_band_hz": [self.config.tx_min_hz, self.config.tx_max_hz],
+            "tx_max_amplitude": self.config.tx_max_amplitude,
+            "tx_max_seconds": self.config.tx_max_seconds,
+            "tx_lead_s": self.config.tx_lead_s,
+            "channel_port": self.config.port,
             "rx_sample_order": self.config.rx_sample_order,
             "live_lifecycle_enabled": False,
             "ssh_enabled": self.config.ssh_user is not None,
@@ -62,10 +91,49 @@ class Service:
             "requested_settings": self.requested,
             "settings_verified": False,
             "iq_received": self.received_data,
-            "mcp_tx_path_present": False,
+            "mcp_tx_path_present": True,
+            "tx_active": self._tx_active(),
             "hardware_tx_state": "unknown_not_read",
             "note": "Local socket state only; no server acceptance ACK or register readback",
         }
+
+    def _tx_active(self) -> bool:
+        if self.config.mode == "live":
+            return self.tx.active
+        ends = self.mock_tx_ends
+        return ends is not None and asyncio.get_running_loop().time() < ends
+
+    def _tx_block(
+        self,
+        frequency_hz: int,
+        sample_rate: int,
+        tone_offset_hz: float,
+        amplitude: float,
+        duration_s: float,
+    ) -> tuple[bytes, float, int]:
+        tx_frequency(frequency_hz)
+        tx_rate(sample_rate)
+        config = self.config
+        numbers = (tone_offset_hz, amplitude, duration_s)
+        if any(type(value) not in {int, float} or not math.isfinite(value) for value in numbers):
+            raise ValueError("Tone offset, amplitude and duration must be finite numbers")
+        if abs(tone_offset_hz) > TX_MAX_OFFSET_FRACTION * sample_rate:
+            raise ValueError("Tone offset must stay within 0.4 of the sample rate")
+        if not 0 < amplitude <= config.tx_max_amplitude:
+            raise ValueError(f"Amplitude must be above 0 and at most {config.tx_max_amplitude}")
+        if not 0 < duration_s <= config.tx_max_seconds:
+            raise ValueError(f"Duration must be above 0 and at most {config.tx_max_seconds} s")
+        # Round down so the limit above still holds for what is really sent.
+        blocks = int(duration_s * sample_rate / TX_BLOCK_SAMPLES)
+        if blocks < 1:
+            raise ValueError(f"Duration must be at least one block, {TX_BLOCK_SAMPLES} samples")
+        block, actual_offset = tone_block(sample_rate, tone_offset_hz, amplitude)
+        low, high = config.tx_min_hz, config.tx_max_hz
+        if config.mode == "live" or low is not None:
+            edges = frequency_hz - abs(actual_offset), frequency_hz + abs(actual_offset)
+            if low is None or high is None or edges[0] < low or edges[1] > high:
+                raise PermissionError(f"TX frequency is outside the operator band {low}-{high} Hz")
+        return block, actual_offset, blocks
 
     async def diagnostics(self) -> dict[str, Any]:
         if self.config.mode == "mock":
@@ -152,6 +220,7 @@ class Service:
         async with self.lock:
             if action == "stop":
                 await self._disconnect()
+                self.mock_tx_ends = None
             self.mock_running = action == "start"
             return {**plan, "executed": True, "simulated": True, "app_running": self.mock_running}
 
@@ -200,32 +269,28 @@ class Service:
                 raise ConnectionError("No RX session; call rp_rx_connect first")
             if self.config.mode == "mock":
                 rate = self.requested["sample_rate"]
-                samples = [
-                    (
-                        0.5 * math.cos(2 * math.pi * 1000 * index / rate),
-                        0.5 * math.sin(2 * math.pi * 1000 * index / rate),
-                    )
-                    for index in range(self.mock_index, self.mock_index + sample_count)
-                ]
+                index = np.arange(self.mock_index, self.mock_index + sample_count)
+                samples = 0.5 * np.exp(2j * np.pi * 1000 * index / rate)
                 self.mock_index += sample_count
             else:
                 try:
-                    samples = await self.rx.read(sample_count)
+                    samples = (await self.rx.read_array(sample_count)).astype(np.complex128)
                 except BaseException:
                     self.requested, self.received_data = None, False
                     raise
             self.received_data = True
-            power = sum(i * i + q * q for i, q in samples) / sample_count
+            power = float(np.mean(samples.real**2 + samples.imag**2))
+            preview = samples[:preview_samples]
             return {
                 "mode": self.config.mode,
                 "simulated": self.config.mode == "mock",
                 "sample_count": len(samples),
-                "preview_iq": samples[:preview_samples],
-                "mean_i": sum(i for i, _ in samples) / sample_count,
-                "mean_q": sum(q for _, q in samples) / sample_count,
+                "preview_iq": [(float(z.real), float(z.imag)) for z in preview],
+                "mean_i": float(samples.real.mean()),
+                "mean_q": float(samples.imag.mean()),
                 "mean_power": power,
                 "rms_magnitude": math.sqrt(power),
-                "peak_magnitude": max(math.hypot(i, q) for i, q in samples),
+                "peak_magnitude": float(np.abs(samples).max()),
                 "units": "uncalibrated application float32 units; not volts or dBm",
                 "sample_order": self.config.rx_sample_order,
                 "requested_settings": self.requested,
@@ -233,6 +298,75 @@ class Service:
                 "note": "Buffered IQ; no timestamps, continuity guarantee, ADC clipping "
                 "detection or hardware setting readback",
             }
+
+    async def tx_start(
+        self,
+        frequency_hz: int,
+        sample_rate: int,
+        tone_offset_hz: float,
+        amplitude: float,
+        duration_s: float,
+        key_ptt: bool,
+        acknowledge_rf_output: bool,
+    ) -> dict[str, Any]:
+        if self.config.mode == "live":
+            if not self.config.allow_tx:
+                raise PermissionError("TX disabled; operator must set RP_ALLOW_TX=true")
+            if acknowledge_rf_output is not True:
+                raise PermissionError("Set acknowledge_rf_output=true after checking the OUT load")
+        block, actual_offset, blocks = self._tx_block(
+            frequency_hz, sample_rate, tone_offset_hz, amplitude, duration_s
+        )
+        async with self.tx_lock:
+            if self._tx_active():
+                raise ValueError("TX burst already running; stop it first")
+            if self.config.mode == "mock" and not self.mock_running:
+                raise ConnectionError("Mock app stopped; simulate app start first")
+            actual_s = blocks * TX_BLOCK_SAMPLES / sample_rate
+            self.tx_requested = {
+                "frequency_hz": frequency_hz,
+                "sample_rate": sample_rate,
+                "tone_offset_hz": actual_offset,
+                "amplitude": amplitude,
+                "duration_s": actual_s,
+                "key_ptt": key_ptt,
+            }
+            if self.config.mode == "live":
+                try:
+                    await self.tx.start(frequency_hz, sample_rate, block, blocks, key_ptt)
+                except (OSError, TimeoutError) as error:
+                    raise ConnectionError(
+                        "TX connection failed; check network, app and role ownership"
+                    ) from error
+            else:
+                self.mock_tx_ends = asyncio.get_running_loop().time() + actual_s
+            return {**self.tx_status(), "side_effects": TX_SIDE_EFFECTS}
+
+    def tx_status(self) -> dict[str, Any]:
+        live = self.config.mode == "live"
+        return {
+            "mode": self.config.mode,
+            "simulated": not live,
+            "tx_active": self._tx_active(),
+            "channel_port": self.config.port,
+            "requested_settings": self.tx_requested,
+            "blocks_sent": self.tx.blocks_sent if live else 0,
+            "outcome": self.tx.outcome if live else "mock",
+            "rf_output_verified": False,
+            "note": "Local state only; the board gives no ACK and RF level is not read back",
+        }
+
+    async def tx_stop(self) -> dict[str, Any]:
+        async with self.tx_lock:
+            await self.tx.stop()
+            self.mock_tx_ends = None
+            return self.tx_status()
+
+    async def shutdown(self) -> None:
+        try:
+            await self.tx_stop()
+        finally:
+            await self.disconnect()
 
     async def _disconnect(self) -> None:
         self.mock_open, self.requested, self.received_data = False, None, False

@@ -19,3 +19,7 @@ captures/
 *.iq
 .DS_Store
 work/
+
+# Internal notes that name a private project; kept local, out of git
+docs/ENGINEERING_LOG.md
+docs/upstream-reports/sdr-transceiver-tx-underrun.md

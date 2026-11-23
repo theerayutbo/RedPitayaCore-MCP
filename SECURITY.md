@@ -25,8 +25,17 @@ device responses as untrusted data.
 HTTP responses must use identity encoding and are capped before buffering.
 Live diagnostic service calls are serialized. Each system-diagnostic call runs
 the 12 fixed SSH checks with at most two SSH processes concurrently.
-TCP and SSH operations have deadlines and bounded diagnostic output. This MCP
-has no TX path; hardware TX state is unknown and outputs are not forced off.
+TCP and SSH operations have deadlines and bounded diagnostic output. Hardware
+TX state is not read back, and outputs are not forced off when no burst is
+running; another client may drive them.
+
+TX is off unless the operator sets `RP_ALLOW_TX=true` and a band with
+`RP_TX_MIN_HZ` and `RP_TX_MAX_HZ`. Each burst is one tone, bounded by
+`RP_TX_MAX_AMPLITUDE` and `RP_TX_MAX_SECONDS`, and needs
+`acknowledge_rf_output=true` in that call. There is no streaming, sample upload
+or open-ended carrier. The limits are software limits in this process: they do
+not replace a dummy load, attenuation, filtering, licensing or a physical
+inhibit, and nothing here measures or calibrates RF power.
 
 The local FPGA workspace is an operator-selected trust boundary. Paths stay
 below one absolute, existing `RP_PROJECT_ROOT`; allowed file types and sizes are
@@ -68,7 +77,7 @@ The server deliberately provides:
 
 The server deliberately excludes:
 
-- TX tools, TX socket roles, PTT commands, and sample transmission;
+- TX of client-supplied samples, streaming TX, and open-ended carriers;
 - arbitrary TCP, HTTP, shell, SSH, remote file, register, or FPGA operations;
 - password or private-key storage;
 - disabled SSH host-key verification; and
@@ -76,22 +85,26 @@ The server deliberately excludes:
   affects global controller ownership.
 
 No environment switch enables a dedicated RedPitayaCore-MCP bitstream/DTBO,
-MMIO/register, hardware-manager, ILA capture, or TX/PTT adapter.
+MMIO/register, hardware-manager, or ILA capture adapter, and no setting makes
+`rp_fpga_hardware_plan` execute anything, including its `tx_burst` plan for a
+custom FPGA image.
 `rp_fpga_hardware_plan` only reports prerequisites. Operator-enabled trusted
 build code retains the host permissions described above; its effects are unmonitored.
 
 Before a future live adapter could be reviewed, it would need exact board and
 active-image identity, approved bitstream and DTBO hashes, exclusive application
 ownership, named register widths/masks/ranges/side effects, and a tested local
-recovery path. TX additionally needs an independent physical inhibit, suitable
-dummy load and attenuation, installation-specific power and duration limits,
-exact-frame server behavior, and a board-local watchdog. A network disconnect is
-not a dependable RF-off mechanism.
+recovery path.
+
+The stock server has no watchdog. Measured on one board, OUT falls silent once
+samples stop, but a client that stalls with its TX control socket open leaves
+the PTT pin high until that socket closes. So do not rely on software to protect
+an amplifier keyed by PTT: fit an independent inhibit or hardware timer.
 
 The optional [`patches/sdr-transceiver-exact-tx.patch`](patches/sdr-transceiver-exact-tx.patch)
 fixes one pinned upstream short-read data-integrity defect and is tested only on
-an offline fixture. It is not deployed by this project and does not add a TX
-watchdog, interlock, RF limits, authorization, or a TX MCP tool.
+an offline fixture. It is not deployed by this project. `rp_tx_start` runs on
+the unpatched server and avoids the defect only by staying ahead of the board.
 
 `RP_ALLOW_RX=true` is an operator permission, not proof that a requested
 frequency is lawful or safe. Use suitable attenuation, filtering, grounding,

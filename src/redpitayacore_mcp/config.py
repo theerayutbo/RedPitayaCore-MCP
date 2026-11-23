@@ -27,6 +27,12 @@ class Settings:
     http_port: int = 80
     timeout: float = 3.0
     allow_rx: bool = False
+    allow_tx: bool = False
+    tx_min_hz: int | None = None
+    tx_max_hz: int | None = None
+    tx_max_amplitude: float = 0.1
+    tx_max_seconds: float = 10.0
+    tx_lead_s: float = 0.1
     rx_sample_order: Literal["glibc_memcpy", "raw"] = "glibc_memcpy"
     allow_lifecycle: bool = False
     ssh_user: str | None = None
@@ -51,6 +57,19 @@ class Settings:
         for port in (self.port, self.http_port, self.ssh_port):
             if type(port) is not int or not 1 <= port <= 65535:
                 raise ValueError("Ports must be integers from 1 to 65535")
+        if self.allow_tx and (self.tx_min_hz is None or self.tx_max_hz is None):
+            raise ValueError("RP_ALLOW_TX requires RP_TX_MIN_HZ and RP_TX_MAX_HZ")
+        if self.tx_min_hz is not None or self.tx_max_hz is not None:
+            if self.tx_min_hz is None or self.tx_max_hz is None:
+                raise ValueError("Set RP_TX_MIN_HZ and RP_TX_MAX_HZ together")
+            if not 1 <= self.tx_min_hz <= self.tx_max_hz <= 60_000_000:
+                raise ValueError("RP_TX_MIN_HZ and RP_TX_MAX_HZ must be ordered, 1 to 60000000")
+        if not math.isfinite(self.tx_max_amplitude) or not 0 < self.tx_max_amplitude <= 1:
+            raise ValueError("RP_TX_MAX_AMPLITUDE must be finite, above 0 and at most 1")
+        if not math.isfinite(self.tx_lead_s) or not 0.05 <= self.tx_lead_s <= 1:
+            raise ValueError("RP_TX_LEAD_S must be finite, from 0.05 to 1 second")
+        if not math.isfinite(self.tx_max_seconds) or not 0.1 <= self.tx_max_seconds <= 180:
+            raise ValueError("RP_TX_MAX_SECONDS must be finite, from 0.1 to 180 seconds")
         if not math.isfinite(self.timeout) or not 0.1 <= self.timeout <= 10:
             raise ValueError("RP_TIMEOUT must be finite, from 0.1 to 10 seconds")
         if self.ssh_user is not None and not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", self.ssh_user):
@@ -75,6 +94,12 @@ class Settings:
             http_port=int(env.get("RP_HTTP_PORT", "80")),
             timeout=float(env.get("RP_TIMEOUT", "3")),
             allow_rx=_flag(env, "RP_ALLOW_RX"),
+            allow_tx=_flag(env, "RP_ALLOW_TX"),
+            tx_min_hz=int(env["RP_TX_MIN_HZ"]) if env.get("RP_TX_MIN_HZ") else None,
+            tx_max_hz=int(env["RP_TX_MAX_HZ"]) if env.get("RP_TX_MAX_HZ") else None,
+            tx_max_amplitude=float(env.get("RP_TX_MAX_AMPLITUDE", "0.1")),
+            tx_max_seconds=float(env.get("RP_TX_MAX_SECONDS", "10")),
+            tx_lead_s=float(env.get("RP_TX_LEAD_S", "0.1")),
             rx_sample_order=cast(
                 Literal["glibc_memcpy", "raw"], env.get("RP_RX_SAMPLE_ORDER", "glibc_memcpy")
             ),

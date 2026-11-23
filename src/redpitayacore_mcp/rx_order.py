@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import operator
 import struct
+
+import numpy as np
 
 BLOCK_SAMPLES = 2048
 BLOCK_BYTES = BLOCK_SAMPLES * 8
@@ -98,12 +99,14 @@ def _load() -> tuple[int, ...]:
 
 
 BLOCK_ORDER = _load()
-_WORDS = struct.Struct(f"<{BLOCK_SAMPLES}Q")
-# A per-sample Python loop capped RX near 350 kS/s; this runs in C and handles 1,250,000 S/s.
-_IN_TRUE_ORDER = operator.itemgetter(*sorted(range(BLOCK_SAMPLES), key=BLOCK_ORDER.__getitem__))
+# Numpy reorders a block in one call. The struct and itemgetter version handled 1.25 MS/s alone,
+# but held the GIL long enough to starve TX in the same process: 3 of 6 TX bursts at 1.25 MS/s
+# had gaps while this process read RX at 100 kS/s.
+_SOURCE = np.argsort(np.array(BLOCK_ORDER, dtype=np.intp), kind="stable")
 
 
 def restore_block(block: bytes) -> bytes:
     if len(block) != BLOCK_BYTES:
         raise ValueError("Expected one complete 16384-byte RX block")
-    return _WORDS.pack(*_IN_TRUE_ORDER(_WORDS.unpack(block)))
+    restored: bytes = np.frombuffer(block, dtype="<u8")[_SOURCE].tobytes()
+    return restored

@@ -30,14 +30,19 @@ ILA, or transmitting RF, and its generated Tcl requests none of those actions.
   start and stop remain blocked because startup may program the FPGA and stop
   changes global controller ownership.
 - All sample values, including mock data, are uncalibrated units.
-- This MCP has no TX path and does not force the board's outputs off. Actual
+- TX is off by default. `rp_tx_start` sends one bounded tone burst and needs
+  `RP_ALLOW_TX=true`, an operator band, and `acknowledge_rf_output=true` in that
+  call. This emits RF: use a dummy load, a cabled loop or attenuation, and transmit
+  on air only where you are licensed to. Amplitude is digital full scale, not power.
+- This MCP does not force the board's outputs off outside its own bursts. Actual
   hardware TX state remains `unknown_not_read`; another client may control it.
 - Local FPGA permissions are independent of `RP_MODE`. Enabling project writes or
   builds in mock mode changes local files or starts Vivado. Trusted HDL, XDC,
   simulator and vendor code can perform arbitrary actions with the build user's
   OS, network and device access, outside this MCP's dedicated transport adapters.
 - `rp_fpga_hardware_plan` is always non-executing. No environment variable turns
-  bitstream loading, register writes, or TX into executable operations.
+  bitstream loading, register writes, or its custom-image TX plan into executable
+  operations.
 
 Read [the protocol boundary](docs/PROTOCOL.md), [provenance](docs/PROVENANCE.md),
 and [security policy](SECURITY.md) before enabling live RX. See the
@@ -117,6 +122,11 @@ Configuration belongs to the server process, not MCP tool arguments.
 | `RP_HTTP_PORT` | `80` | HTTP metadata port |
 | `RP_TIMEOUT` | `3` | I/O timeout from 0.1 through 10 seconds |
 | `RP_ALLOW_RX` | `false` | Operator permission for live RX state changes |
+| `RP_ALLOW_TX` | `false` | Operator permission for live RF output |
+| `RP_TX_MIN_HZ`, `RP_TX_MAX_HZ` | unset | Band for all RF of a burst. Required with `RP_ALLOW_TX=true` |
+| `RP_TX_MAX_AMPLITUDE` | `0.1` | Highest amplitude, as digital full scale up to 1 |
+| `RP_TX_MAX_SECONDS` | `10` | Longest burst, up to 180 s (one 110.6 s WSPR transmission with lead and tail) |
+| `RP_TX_LEAD_S` | `0.1` | How far TX runs ahead of the DAC, 0.05 to 1 s. Raise it on a loaded host |
 | `RP_RX_SAMPLE_ORDER` | `glibc_memcpy` | Restores RX sample order, as needed on the tested board. `raw` is for images that read the FIFO in order |
 | `RP_ALLOW_LIFECYCLE` | `false` | Permission for mock lifecycle execution only |
 | `RP_SSH_USER` | unset | Enables optional fixed read-only SSH diagnostics |
@@ -168,6 +178,9 @@ FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 | `rp_rx_read` | Reads bounded little-endian float32 I/Q; defaults to 2,048 samples and 8 previews |
 | `rp_rx_disconnect` | Closes RX sockets; closing control resets tuning upstream |
 | `rp_connection_status` | Reports local socket state and explicitly unknown hardware TX state |
+| `rp_tx_start` | Sends one self-ending tone burst, optionally keying PTT. Emits RF |
+| `rp_tx_status` | Reports the local burst state and last outcome, with no RF readback |
+| `rp_tx_stop` | Ends a burst early, flushes zeros and lowers PTT |
 
 ### FPGA development tools
 
@@ -233,8 +246,7 @@ STEMlab 125-14 v1.0 running Red Pitaya OS 3.00-57 and `sdr_transceiver` 1.0-2026
 2026-11-02: HTTP and SSH diagnostics, TCP probe, RX at all six sample rates, disconnect
 and reconnect, and four safety refusals. It also passed 134 of 134 extended checks: the
 local FPGA tools, sustained RX up to 100,000 S/s, and recovery from failures. Above that
-rate, reads work but continuity is not guaranteed. TX is not part of this server, and real
-Vivado builds were not tested. See [docs/VALIDATION.md](docs/VALIDATION.md) for the results
+rate, reads work but continuity is not guaranteed. Real Vivado builds were not tested. See [docs/VALIDATION.md](docs/VALIDATION.md) for the results
 and limits. To repeat them on your own idle board, run `scripts/live_acceptance.py` and
 `scripts/extended_acceptance.py`.
 
@@ -288,10 +300,11 @@ See [validation evidence and precise limits](docs/VALIDATION.md).
 
 ## Project status and limitations
 
-- No real STEMlab was contacted during development.
-- No dedicated MCP TX tool or live hardware mutation adapter exists.
+- Hardware results come from one STEMlab 125-14. See the tested-on-hardware note.
+- TX is limited to self-ending tone bursts on the stock app. There is no sample
+  upload, no modulation and no calibrated power.
 - Live app start/stop is always blocked.
-- Live FPGA programming, MMIO/register access, ILA capture, and TX remain
+- Live FPGA programming, MMIO/register access and ILA capture remain
   unimplemented. Hardware-plan tools cannot enable them.
 - The generated Vivado flow is experimental. Vivado was not installed in the
   development environment. Toolchain tests cover generated Tcl and bounded
