@@ -44,12 +44,15 @@ class Settings:
     build_timeout: float = 300
     ps_project_root: Path | None = None
     allow_ps_project_write: bool = False
+    allow_scpi: bool = False
 
     def __post_init__(self) -> None:
         if self.rx_sample_order not in {"glibc_memcpy", "raw"}:
             raise ValueError("RP_RX_SAMPLE_ORDER must be glibc_memcpy or raw")
         if self.mode not in {"mock", "live"}:
             raise ValueError("RP_MODE must be mock or live")
+        if self.mode == "live" and self.allow_scpi and (self.allow_rx or self.allow_tx):
+            raise ValueError("Live SCPI and SDR RX/TX permissions must not be combined")
         if self.mode == "live" and not self.host:
             raise ValueError("Live mode requires RP_HOST set to the board IPv4 address")
         if self.host is not None:
@@ -121,4 +124,5 @@ class Settings:
             if env.get("RP_PS_PROJECT_ROOT")
             else None,
             allow_ps_project_write=_flag(env, "RP_ALLOW_PS_PROJECT_WRITE"),
+            allow_scpi=_flag(env, "RP_ALLOW_SCPI"),
         )
