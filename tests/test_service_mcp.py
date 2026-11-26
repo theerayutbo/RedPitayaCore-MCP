@@ -121,15 +121,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_fpga_hardware_plan",
                 "rp_fpga_project_info",
                 "rp_fpga_read_source",
-                "rp_fpga_write_source",
                 "rp_fpga_inspect_artifact",
                 "rp_fpga_read_report",
                 "rp_fpga_manifest",
-                "rp_fpga_build",
-                "rp_fpga_build_status",
-                "rp_fpga_build_cancel",
-                "rp_fpga_build_report",
-                "rp_fpga_ila_plan",
             }
             ps = await session.call_tool("rp_ps_project_info", {})
             assert not ps.isError
