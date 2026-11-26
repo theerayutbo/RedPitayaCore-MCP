@@ -27,9 +27,7 @@ def build_server(config: Settings) -> FastMCP[Any]:
     service = Service(config)
     scpi = OfficialSCPI(config)
     fpga = FPGAService(
-        replace(
-            config, allow_project_write=False, allow_local_build=False, vivado_executable=None
-        ),
+        replace(config, allow_project_write=False, allow_local_build=False, vivado_executable=None),
         service,
     )
     ps = FPGAWorkspace(
