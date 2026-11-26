@@ -76,6 +76,7 @@ def base_env(**overrides: str) -> dict[str, str]:
         "RP_MODE": "mock",
         "RP_HOST": "",
         "RP_ALLOW_RX": "false",
+        "RP_ALLOW_SCPI": "false",
         "RP_ALLOW_LIFECYCLE": "false",
         "RP_SSH_USER": "",
         "RP_PROJECT_ROOT": "",
@@ -179,8 +180,8 @@ async def plans_and_profile(pinned_source: Path | None) -> None:
         check("unknown tool is refused", await refused(client, "rp_tx_enable"))
         tools = (await client.list_tools()).tools
         check(
-            "25 tools, of which 3 are TX",
-            len(tools) == 25
+            "28 tools, of which 3 are TX",
+            len(tools) == 28
             and sorted(t.name for t in tools if t.name.startswith("rp_tx_"))
             == ["rp_tx_start", "rp_tx_status", "rp_tx_stop"],
         )
