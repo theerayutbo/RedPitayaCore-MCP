@@ -20,7 +20,7 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
         "RP_ALLOW_LIFECYCLE": "false",
         "RP_PROJECT_ROOT": str(tmp_path),
         "RP_ALLOW_PROJECT_WRITE": "true",
-        "RP_ALLOW_LOCAL_BUILD": "false",
+        "RP_ALLOW_LOCAL_BUILD": "true",
         "RP_VIVADO_EXECUTABLE": "",
     }
     params = StdioServerParameters(
@@ -30,9 +30,18 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert "rp_fpga_build" in tools
-            assert tools["rp_fpga_build"].annotations.openWorldHint is True
-            assert tools["rp_fpga_write_source"].annotations.readOnlyHint is False
+            assert not {
+                "rp_fpga_build",
+                "rp_fpga_write_source",
+                "rp_fpga_build_cancel",
+                "rp_fpga_build_status",
+                "rp_fpga_build_report",
+                "rp_fpga_ila_plan",
+            }.intersection(tools)
+            assert tools["rp_fpga_read_source"].annotations.readOnlyHint is True
+            caps = await session.call_tool("rp_fpga_capabilities", {})
+            assert caps.structuredContent["rtl_source_editing"] is False
+            assert caps.structuredContent["toolchain"]["execution_enabled"] is False
             assert tools["rp_fpga_hardware_plan"].annotations.readOnlyHint is True
             info = await session.call_tool("rp_fpga_project_info", {})
             assert info.structuredContent["available"] is True
@@ -46,7 +55,10 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
                     "expected_sha256": sha,
                 },
             )
-            assert not updated.isError
+            assert updated.isError
+            assert (tmp_path / "counter.sv").read_text() == (
+                "module counter(input clk); endmodule\n"
+            )
             stale = await session.call_tool(
                 "rp_fpga_write_source",
                 {"path": "counter.sv", "content": "stale", "expected_sha256": sha},
@@ -77,7 +89,7 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
                     "sources": ["counter.sv"],
                 },
             )
-            assert plan.structuredContent["executed"] is False
+            assert plan.isError
             denied = await session.call_tool(
                 "rp_fpga_build",
                 {

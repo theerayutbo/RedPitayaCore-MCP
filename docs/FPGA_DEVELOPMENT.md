@@ -1,5 +1,8 @@
 # Offline FPGA development
 
+> Historical development design retained for provenance. In the Core-first architecture, Core exposes only read-only FPGA inspection and non-executing preflight plans. RTL writes, ILA design and builds now belong to [RedPitayaFPGA-MCP](https://github.com/theerayutbo/RedPitayaFPGA-MCP); the historical instructions below do not describe the current Core MCP tool surface.
+
+
 The FPGA extension lets Claude Code work with a bounded local RTL workspace and
 an operator-selected Vivado executable. It provides no dedicated live deployment,
 MMIO, ILA-capture, or TX adapter, and generated Tcl requests none of those actions.

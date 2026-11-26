@@ -1,4 +1,4 @@
-"""MCP surface for local FPGA development and non-executing hardware plans."""
+"""Read-only FPGA inspection surface and retained offline development implementation."""
 
 from __future__ import annotations
 
@@ -35,7 +35,8 @@ class FPGAService:
         return {
             "local_project": self.workspace.info(),
             "toolchain": self.builds.capabilities(),
-            "rtl_source_editing": self.config.allow_project_write,
+            "rtl_source_editing": self.workspace.allow_write,
+            "development_mcp": "RedPitayaFPGA-MCP",
             "bitstream_inspection": "local hash and size only; format/target not verified",
             "live_mmio": False,
             "live_fpga_programming": False,
@@ -95,16 +96,10 @@ def register_fpga_tools(mcp: FastMCP[Any], service: FPGAService) -> None:
     read_device = ToolAnnotations(
         readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True
     )
-    changes = ToolAnnotations(
-        readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False
-    )
-    build_code = ToolAnnotations(
-        readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
-    )
 
     @mcp.tool(annotations=local)
     def rp_fpga_capabilities() -> dict[str, Any]:
-        """Report local FPGA workspace/toolchain availability and explicit hardware limits."""
+        """Report read-only FPGA inspection and explicit hardware limits."""
         return service.capabilities()
 
     @mcp.tool(annotations=read_device)
@@ -144,15 +139,6 @@ def register_fpga_tools(mcp: FastMCP[Any], service: FPGAService) -> None:
         """Read bounded UTF-8 RTL/XDC and SHA-256. Path is relative to RP_PROJECT_ROOT."""
         return service.workspace.read_source(path)
 
-    @mcp.tool(annotations=changes)
-    def rp_fpga_write_source(
-        path: str,
-        content: Annotated[str, Field(max_length=262144)],
-        expected_sha256: str | None = None,
-    ) -> dict[str, Any]:
-        """Write local RTL/XDC with operator permission and current hash for replacements."""
-        return service.workspace.write_source(path, content, expected_sha256)
-
     @mcp.tool(annotations=local)
     def rp_fpga_inspect_artifact(path: str, expected_sha256: str | None = None) -> dict[str, Any]:
         """Hash a local bitstream/DTBO/debug/report/checkpoint candidate; no format/board proof."""
@@ -169,6 +155,28 @@ def register_fpga_tools(mcp: FastMCP[Any], service: FPGAService) -> None:
     ) -> dict[str, Any]:
         """Bind local bitstream/DTBO hashes and claimed part/source into an UNAPPROVED proposal."""
         return service.manifest(bitstream_path, dtbo_path, part, source_revision)
+
+
+# Retained implementation for migration/history; never registered by Core's server.
+def _register_legacy_development_tools(mcp: FastMCP[Any], service: FPGAService) -> None:
+    local = ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+    )
+    changes = ToolAnnotations(
+        readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False
+    )
+    build_code = ToolAnnotations(
+        readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
+    )
+
+    @mcp.tool(annotations=changes)
+    def rp_fpga_write_source(
+        path: str,
+        content: Annotated[str, Field(max_length=262144)],
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        """Write local RTL/XDC with operator permission and current hash for replacements."""
+        return service.workspace.write_source(path, content, expected_sha256)
 
     @mcp.tool(annotations=build_code)
     async def rp_fpga_build(

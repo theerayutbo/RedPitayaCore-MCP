@@ -37,32 +37,7 @@ or open-ended carrier. The limits are software limits in this process: they do
 not replace a dummy load, attenuation, filtering, licensing or a physical
 inhibit, and nothing here measures or calibrates RF power.
 
-The local FPGA workspace is an operator-selected trust boundary. Paths stay
-below one absolute, existing `RP_PROJECT_ROOT`; allowed file types and sizes are
-bounded. Replacing an existing source requires the current SHA-256 returned by a
-read. Atomic replacement and an advisory lock serialize cooperating
-RedPitayaCore-MCP writers. External editors and build tools must be quiescent;
-the hash is not a filesystem-wide compare-and-swap or source authentication.
-Artifact inspection reports hashes and sizes only: it does not validate Xilinx formats,
-the Zynq part, the STEMlab board, signatures, provenance, or the active image.
-
-Real local builds require `RP_ALLOW_PROJECT_WRITE=true`,
-`RP_ALLOW_LOCAL_BUILD=true`, and an absolute `RP_VIVADO_EXECUTABLE`. These
-permissions are independent of `RP_MODE=mock`: they can change local files and
-run Vivado while the MCP's dedicated hardware transport adapters remain disabled.
-Every real build call also requires `acknowledge_trusted_code=true`. This is an
-explicit hazard acknowledgement, not a sandbox or independent approval. HDL,
-XDC, simulation, vendor initialization, and Vivado itself are trusted executable
-code and can use the build user's OS, network, and device access. The generated
-flow does not source pre-existing project Tcl hooks or request hardware
-programming, and MCP arguments cannot select an arbitrary executable or inject
-Tcl commands. The local flow relies on POSIX descriptor semantics and remains
-experimental because no real Vivado run was available in the development
-environment.
-
-Run actual builds on an isolated host or container with no network route to the
-Red Pitaya and no USB, JTAG, or other board-device access. Build output and exit
-status cannot establish whether trusted code caused external hardware activity.
+Core's FPGA workspace is read-only regardless of legacy environment flags. Bounded inspection covers source, reports, artifact hashes and metadata; hashes do not validate Xilinx format, target, signature or the active image. PS source edits require a separately configured root, explicit operator permission and current SHA-256 for replacements; external editors must be quiescent. Core does not execute PS source or provide a general shell. The separate FPGA-MCP owns RTL edits and builds; actual builds must run on an isolated host without board network or device access.
 
 The server deliberately provides:
 
@@ -70,10 +45,8 @@ The server deliberately provides:
 - optional fixed, read-only SSH diagnostics using the system OpenSSH client;
 - explicitly enabled RX-only sockets and bounded sample reads; and
 - mock-only lifecycle simulation;
-- bounded local RTL/XDC reads and SHA-guarded writes;
-- optional local behavioral simulation, synthesis, implementation, and local
-  bitstream generation through one operator-selected Vivado executable; and
-- non-executing named-register, hardware-preflight, manifest, and ILA plans.
+- bounded local RTL/XDC and report reads, artifact inspection, and opt-in local PS source editing;
+- non-executing named-register, hardware-preflight and manifest plans.
 
 The server deliberately excludes:
 
@@ -88,8 +61,7 @@ No environment switch enables a dedicated RedPitayaCore-MCP bitstream/DTBO,
 MMIO/register, hardware-manager, or ILA capture adapter, and no setting makes
 `rp_fpga_hardware_plan` execute anything, including its `tx_burst` plan for a
 custom FPGA image.
-`rp_fpga_hardware_plan` only reports prerequisites. Operator-enabled trusted
-build code retains the host permissions described above; its effects are unmonitored.
+`rp_fpga_hardware_plan` only reports prerequisites. Core exposes no FPGA build or RTL write tool, even with legacy flags enabled.
 
 Before a future live adapter could be reviewed, it would need exact board and
 active-image identity, approved bitstream and DTBO hashes, exclusive application
@@ -111,12 +83,16 @@ frequency is lawful or safe. Use suitable attenuation, filtering, grounding,
 and RF operating practices. RX connection setup changes device state even though
 it does not transmit RF.
 
-Build jobs permit one active process and eight jobs per server session. They time
-out, cap captured output at 4 MiB, retain a 16 KiB tail, and attempt to terminate
-the owned process group while its leader runs, with a bounded cleanup wait.
-Termination is best effort; detached descendants or inherited pipes may outlive
-the job. Host/container isolation must provide hard containment. These controls
-do not make untrusted HDL or vendor tools safe.
+## Official SCPI adapter
+
+SCPI is off by default. Live access requires RP_ALLOW_SCPI and explicit per-call
+operator confirmation of the already-running official SCPI service, v0.94
+image and exclusive ownership. Live SDR RX/TX permissions cannot be combined
+with SCPI in one configuration. Other clients are not interlocked; the operator
+must ensure exclusivity. SCPI is unauthenticated and must use a trusted isolated
+network. Only fixed query strings are sent, with bounded ASCII CRLF replies
+and a total deadline. The identity reply is checked before acquisition queries,
+but cannot prove board, firmware, image, or server authenticity. Waveform reads are limited to 256 ASCII/VOLTS samples from an already triggered, filled buffer with keep-arm off; input count and channel are strictly validated. No arbitrary SCPI, reset, acquisition start, service start/stop, MMIO or FPGA loading.
 
 ## Supported versions
 

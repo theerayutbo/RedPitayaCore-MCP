@@ -1,7 +1,16 @@
 # RedPitayaCore-MCP
 
+## Core-first PS/PL architecture
+
+Core is the general-purpose software development and device runtime MCP. It owns PS-side Python/C/C++ applications, drivers, DSP, diagnostics and operation of existing PL engines. The optional [RedPitayaFPGA-MCP](https://github.com/theerayutbo/RedPitayaFPGA-MCP) owns RTL, IP, hardware interfaces, simulation, synthesis, implementation and Vivado. Core needs no Vivado for PS development. Core retains read-only FPGA inspection, diagnostics, register and hardware preflight plans. RTL writes, ILA design, simulation and builds are not exposed even if legacy environment flags are set; their implementation is retained for migration only. live loading, arbitrary MMIO and DMA control remain unimplemented.
+
+### PS software workspace
+
+Set `RP_PS_PROJECT_ROOT` to an absolute existing local directory, separate from your FPGA workspace. `RP_ALLOW_PS_PROJECT_WRITE=true` enables bounded local source writes (default false). The `rp_ps_project_info`, `rp_ps_read_source` and `rp_ps_write_source` tools support Python, C, and C++ source/header files. Replacements require the current SHA-256; no source is executed, built, transferred or deployed by these tools. POSIX workspace constraints and the requirement for quiescent external editors still apply. Use a source-only workspace with no secrets. This is a first-stage PS development capability, not remote code execution or a complete PS SDK.
+
+
 A local MCP server for safe Red Pitaya diagnostics, RX access, and bounded
-offline FPGA development from Claude Code.
+read-only FPGA inspection from Claude Code.
 It targets an operator-managed STEMlab 125-14 running official Red Pitaya OS
 3.00-57 with Pavel Demin `sdr_transceiver` 1.0-20260302 build `cbecbdd4`.
 Those values are a compatibility target, not facts inferred from an open port or
@@ -10,11 +19,35 @@ device response.
 The server starts in deterministic mock mode, with no target host and no hardware
 traffic. Its live surface is deliberately narrow: bounded metadata and connection
 diagnostics, optional fixed read-only SSH diagnostics, and explicitly enabled RX
-control/data. A separate local FPGA surface can inspect and edit an explicitly
-selected HDL workspace, plan named register operations, run an operator-configured
-Vivado toolchain, inspect generated artifacts, and produce ILA Tcl plans. It has
-no dedicated tool for loading an FPGA image, accessing live MMIO, capturing an
-ILA, or transmitting RF, and its generated Tcl requests none of those actions.
+control/data. The FPGA inspection surface reads local HDL, constraints, artifacts and reports, and provides non-executing register and hardware plans. FPGA design and build belong to the separate FPGA-MCP. No live MMIO, image loading or ILA capture is implemented.
+
+## Official-first integration (phase 1)
+
+Use the vendor's existing SCPI API instead of reimplementing hardware drivers.
+`rp_official_capabilities` lists implemented adapters, not detected hardware.
+`rp_scpi_identity` and `rp_scpi_acquisition_status` expose fixed queries on TCP 5000.
+Mock mode is default and makes no network calls. Live SCPI requires
+`RP_ALLOW_SCPI=true`, disabled SDR RX/TX permissions, and per-call
+`acknowledge_exclusive_scpi=true` after independently confirming an already-running
+official SCPI server, v0.94 image and exclusive access. Never start/stop a service
+or switch images automatically. Identity responses do not prove the active image or board model.
+The acquisition query checks the SCPI identity response first, then reads decimation, trigger and buffer-fill state sequentially;
+it does not start acquisition, read waveform samples or change outputs.
+The operator must ensure no other client changes the image or owns the hardware. The SCPI connection is unauthenticated; use only a trusted isolated network.
+`rp_scpi_waveform_read` retrieves 1–256 oldest samples on channel 1 or 2 from a
+previously completed acquisition using the vendor's SCPI data query. It checks
+ASCII format, VOLTS units, keep-arm off, triggered and filled buffer, then reads
+the reported sample rate and returns voltage samples with min/max/mean/RMS.
+No setters, reset, start, trigger or stop are sent. The operator must perform
+the acquisition independently and ensure exclusive ownership; state checks
+cannot prove an atomic snapshot or absence of competing clients. Live waveform
+reading is not yet board-validated. Direct MMIO, C/Python API, streaming and
+full instrument control remain future work.
+
+Sources: [official SCPI documentation](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/scpi.html),
+[official acquisition commands](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/command_list/commands-acq.html),
+[Release-2026.1 SCPI command table](https://github.com/RedPitaya/RedPitaya/blob/Release-2026.1/scpi-server/src/scpi-commands.cpp).
+Live hardware verification of this adapter is pending.
 
 ## Safety boundary
 
@@ -36,18 +69,13 @@ ILA, or transmitting RF, and its generated Tcl requests none of those actions.
   on air only where you are licensed to. Amplitude is digital full scale, not power.
 - This MCP does not force the board's outputs off outside its own bursts. Actual
   hardware TX state remains `unknown_not_read`; another client may control it.
-- Local FPGA permissions are independent of `RP_MODE`. Enabling project writes or
-  builds in mock mode changes local files or starts Vivado. Trusted HDL, XDC,
-  simulator and vendor code can perform arbitrary actions with the build user's
-  OS, network and device access, outside this MCP's dedicated transport adapters.
+- Core FPGA workspace is read-only regardless of legacy build/write flags. PS source writes are independently opt-in and do not execute code.
 - `rp_fpga_hardware_plan` is always non-executing. No environment variable turns
   bitstream loading, register writes, or its custom-image TX plan into executable
   operations.
 
 Read [the protocol boundary](docs/PROTOCOL.md), [provenance](docs/PROVENANCE.md),
-and [security policy](SECURITY.md) before enabling live RX. See the
-[FPGA development guide](docs/FPGA_DEVELOPMENT.md) before enabling local writes
-or builds.
+and [security policy](SECURITY.md) before enabling live RX. Use the separate FPGA-MCP for RTL edits and builds.
 
 ## Requirements
 
@@ -55,8 +83,6 @@ or builds.
 - Claude Code with local stdio MCP support
 - Optional for live system diagnostics: the system `ssh` client, existing key
   authentication, and a verified `known_hosts` entry
-- Optional for real local FPGA builds: a licensed Linux Vivado installation and
-  an operator-selected absolute executable path
 
 The dependency `mcp>=1.30,<2` is intentional. It uses the official Python SDK
 1.x maintenance line and avoids silently adopting an unreviewed major version.
@@ -132,10 +158,8 @@ Configuration belongs to the server process, not MCP tool arguments.
 | `RP_SSH_USER` | unset | Enables optional fixed read-only SSH diagnostics |
 | `RP_SSH_PORT` | `22` | SSH port |
 | `RP_PROJECT_ROOT` | unset | Absolute existing local FPGA workspace directory |
-| `RP_ALLOW_PROJECT_WRITE` | `false` | Allows bounded HDL/XDC writes inside the project root |
-| `RP_ALLOW_LOCAL_BUILD` | `false` | Allows real local Vivado jobs; also requires project-write permission |
-| `RP_VIVADO_EXECUTABLE` | unset | Absolute path to the operator-selected Vivado executable |
-| `RP_BUILD_TIMEOUT` | `300` | Local build timeout from 0.1 through 3,600 seconds |
+| `RP_PS_PROJECT_ROOT` | unset | Absolute existing PS software workspace |
+| `RP_ALLOW_PS_PROJECT_WRITE` | `false` | Enables bounded PS source writes |
 
 The sample [`.env.example`](.env.example) is documentation; the server reads its
 process environment and does not need an environment file. Do not commit a live
@@ -162,8 +186,7 @@ authentication. The project does not store keys or passwords.
 
 ## MCP tools
 
-The server exposes 25 tools: the original nine SDR/device tools and 16 offline
-FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
+The server exposes 29 tools: 12 device tools, 3 PS workspace tools, 10 read-only FPGA inspection tools and 4 official API tools.
 
 ### Device and RX tools
 
@@ -182,26 +205,20 @@ FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 | `rp_tx_status` | Reports the local burst state and last outcome, with no RF readback |
 | `rp_tx_stop` | Ends a burst early, flushes zeros and lowers PTT |
 
-### FPGA development tools
+### FPGA inspection tools (read-only)
 
 | Tool | Behavior |
 | --- | --- |
-| `rp_fpga_capabilities` | Reports workspace/toolchain availability and explicit hardware limits |
+| `rp_fpga_capabilities` | Reports read-only inspection capability and explicit hardware limits |
 | `rp_fpga_diagnostics` | Reads the same fixed SSH FPGA/overlay/installed-file evidence without MMIO |
 | `rp_fpga_register_map` | Shows the source-pinned instance-1 register profile; performs no access |
 | `rp_fpga_register_plan` | Validates one named, width-limited read/write proposal; never executes it |
 | `rp_fpga_hardware_plan` | Lists blockers and interlocks for image load, register write, or TX burst |
 | `rp_fpga_project_info` | Lists bounded HDL, XDC, and artifact paths below `RP_PROJECT_ROOT` |
 | `rp_fpga_read_source` | Reads bounded UTF-8 RTL/XDC and returns its SHA-256 |
-| `rp_fpga_write_source` | Creates or SHA-guardedly replaces bounded RTL/XDC when locally enabled |
 | `rp_fpga_inspect_artifact` | Hashes a bounded `.bit`, `.bin`, `.dtbo`, `.ltx`, `.rpt`, or `.dcp` file |
 | `rp_fpga_read_report` | Reads bounded `.rpt` or `.ltx` text as untrusted output |
 | `rp_fpga_manifest` | Binds local hashes to a claimed part/source revision in an unapproved proposal |
-| `rp_fpga_build` | Dry-runs by default; real trusted-code execution also needs explicit per-call acknowledgement |
-| `rp_fpga_build_status` | Returns state and a bounded output tail for an owned job |
-| `rp_fpga_build_cancel` | Cancels an owned job and terminates its process group on POSIX |
-| `rp_fpga_build_report` | Reads the timing, utilization, or DRC report from an owned job |
-| `rp_fpga_ila_plan` | Generates exact-net ILA insertion Tcl; does not rebuild, deploy, or capture |
 
 Artifact inspection checks extension, size, and SHA-256 only. It does not parse
 the format or prove the target board. A manifest is not signed or approved, and
@@ -213,13 +230,7 @@ Source replacement uses an advisory lock for cooperating RedPitayaCore-MCP
 processes and an expected SHA-256. External editors and build tools must be
 quiescent during the write; this is not a filesystem-wide compare-and-swap.
 
-Run real build jobs on an isolated host or container with no route to the Red
-Pitaya and no USB, JTAG, or other board-device access. In addition to the two
-operator environment permissions, every `dry_run=false` call must set
-`acknowledge_trusted_code=true`. That acknowledgement records the caller's
-understanding that HDL, XDC, simulation, and vendor initialization are executable
-input; it is not a sandbox or independent approval. Build results cannot prove
-that external hardware activity did or did not occur.
+For FPGA development, use the separate FPGA-MCP with its operator permissions and isolation requirements.
 
 `rp_rx_read` caps acquisition at 8,192 complex samples and returned previews at
 32 samples. A successful probe or connection is reachability evidence, not
@@ -250,28 +261,9 @@ rate, reads work but continuity is not guaranteed. Real Vivado builds were not t
 and limits. To repeat them on your own idle board, run `scripts/live_acceptance.py` and
 `scripts/extended_acceptance.py`.
 
-## Offline FPGA quick start
+## Offline FPGA inspection quick start
 
-Copy or point `RP_PROJECT_ROOT` at an existing local workspace. A small
-self-checking counter example is included in [`examples/fpga-demo`](examples/fpga-demo):
-
-```bash
-export RP_MODE=mock
-export RP_PROJECT_ROOT="$PWD/examples/fpga-demo"
-export RP_ALLOW_PROJECT_WRITE=false
-export RP_ALLOW_LOCAL_BUILD=false
-redpitayacore-mcp
-```
-
-Start with `rp_fpga_project_info`, `rp_fpga_read_source`, and an
-`rp_fpga_build` call using `dry_run=true`. Simulation uses `simple_counter.sv`
-and `tb_counter.sv`. The XDC only declares the example clock timing; it contains
-no STEMlab package-pin assignments. Synthesis can exercise the flow, but
-implementation/bitstream generation needs a reviewed board constraint set and
-may correctly fail DRC with this example. Real execution additionally requires
-both local permission flags and an absolute `RP_VIVADO_EXECUTABLE` on a licensed
-supported Linux host. Full setup and call examples are in
-[docs/FPGA_DEVELOPMENT.md](docs/FPGA_DEVELOPMENT.md).
+Set `RP_PROJECT_ROOT` to an absolute HDL workspace and run Core in mock mode. Use `rp_fpga_project_info`, `rp_fpga_read_source`, `rp_fpga_read_report` and `rp_fpga_inspect_artifact`. For source changes, simulation or Vivado builds, use [RedPitayaFPGA-MCP](https://github.com/theerayutbo/RedPitayaFPGA-MCP).
 
 ## Development
 

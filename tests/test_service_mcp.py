@@ -82,7 +82,10 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
     env = {**os.environ, "RP_MODE": "mock", "PYTHONPATH": "src"}
     # Do not inherit the operator's optional live permission flags.
     env["RP_ALLOW_RX"] = "false"
+    env["RP_ALLOW_SCPI"] = "false"
     env["RP_ALLOW_LIFECYCLE"] = "false"
+    env["RP_PS_PROJECT_ROOT"] = ""
+    env["RP_ALLOW_PS_PROJECT_WRITE"] = "false"
     env["RP_PROJECT_ROOT"] = ""
     env["RP_ALLOW_PROJECT_WRITE"] = "false"
     env["RP_ALLOW_LOCAL_BUILD"] = "false"
@@ -109,6 +112,13 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_tx_start",
                 "rp_tx_status",
                 "rp_tx_stop",
+                "rp_official_capabilities",
+                "rp_scpi_identity",
+                "rp_scpi_acquisition_status",
+                "rp_scpi_waveform_read",
+                "rp_ps_project_info",
+                "rp_ps_read_source",
+                "rp_ps_write_source",
                 "rp_fpga_capabilities",
                 "rp_fpga_diagnostics",
                 "rp_fpga_register_map",
@@ -116,16 +126,25 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_fpga_hardware_plan",
                 "rp_fpga_project_info",
                 "rp_fpga_read_source",
-                "rp_fpga_write_source",
                 "rp_fpga_inspect_artifact",
                 "rp_fpga_read_report",
                 "rp_fpga_manifest",
-                "rp_fpga_build",
-                "rp_fpga_build_status",
-                "rp_fpga_build_cancel",
-                "rp_fpga_build_report",
-                "rp_fpga_ila_plan",
             }
+            ps = await session.call_tool("rp_ps_project_info", {})
+            assert not ps.isError
+            assert ps.structuredContent["available"] is False
+            assert ".py" in ps.structuredContent["source_extensions"]
+            denied = await session.call_tool(
+                "rp_ps_write_source", {"path": "a.py", "content": "x=1"}
+            )
+            assert denied.isError
+            scpi = await session.call_tool("rp_scpi_acquisition_status", {})
+            assert not scpi.isError
+            assert scpi.structuredContent["simulated"] is True
+            assert scpi.structuredContent["decimation"] == 64
+            wave = await session.call_tool("rp_scpi_waveform_read", {"sample_count": 8})
+            assert not wave.isError
+            assert wave.structuredContent["sample_count"] == 8
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
             assert annotations["rp_rx_read"].readOnlyHint is False
