@@ -135,7 +135,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
             assert not ps.isError
             assert ps.structuredContent["available"] is False
             assert ".py" in ps.structuredContent["source_extensions"]
-            denied = await session.call_tool("rp_ps_write_source", {"path": "a.py", "content": "x=1"})
+            denied = await session.call_tool(
+                "rp_ps_write_source", {"path": "a.py", "content": "x=1"}
+            )
             assert denied.isError
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
