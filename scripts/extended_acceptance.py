@@ -8,7 +8,7 @@ Usage: python scripts/extended_acceptance.py [--report FILE]
 Without --host no device is contacted. With it, the board must be idle: the script starts and
 stops sdr_transceiver with the board's own API, stops it mid-session on purpose, and opens only
 RX roles. It never keys TX. --ssh-user also copies the installed image files off the board with
-scp, to compare their hashes. rp_fpga_build is only exercised up to its dry run and refusals.
+scp, to compare their hashes. Core refuses FPGA development tools; use the standalone FPGA MCP for builds.
 """
 
 from __future__ import annotations
@@ -174,35 +174,13 @@ async def plans_and_profile(pinned_source: Path | None) -> None:
             await refused(client, "rp_fpga_hardware_plan", operation="erase"),
         )
 
-        ila = await data(
-            client,
-            "rp_fpga_ila_plan",
-            clock_net="clk",
-            probes=[["a[0]", "a[1]"], ["b"]],
-            depth=2048,
-        )
-        stub = "proc unknown {args} {return net}\n" + ila["script"]
-        tcl = await asyncio.to_thread(
-            subprocess.run, ["tclsh"], input=stub, capture_output=True, text=True, timeout=10
-        )
-        check("ILA plan: real Tcl parses it, vendor commands stubbed", tcl.returncode == 0)
-        check("ILA plan: no capture", ila["hardware_capture_supported"] is False)
-        for label, arguments in {
-            "Tcl injection": {"clock_net": "clk;exec rm", "probes": [["a"]]},
-            "bracket command": {"clock_net": "clk", "probes": [["[exec id]"]]},
-            "wildcard": {"clock_net": "clk*", "probes": [["a"]]},
-            "bad depth": {"clock_net": "clk", "probes": [["a"]], "depth": 1000},
-            "empty probe": {"clock_net": "clk", "probes": [[]]},
-        }.items():
-            check(
-                f"ILA plan refuses {label}", await refused(client, "rp_fpga_ila_plan", **arguments)
-            )
+        check("ILA development tool absent", await refused(client, "rp_fpga_ila_plan"))
 
         check("unknown tool is refused", await refused(client, "rp_tx_enable"))
         tools = (await client.list_tools()).tools
         check(
-            "28 tools, of which 3 are TX",
-            len(tools) == 28
+            "25 tools, of which 3 are TX",
+            len(tools) == 25
             and sorted(t.name for t in tools if t.name.startswith("rp_tx_"))
             == ["rp_tx_start", "rp_tx_status", "rp_tx_stop"],
         )
@@ -313,82 +291,21 @@ async def project_tools() -> None:
                     part="xc7z010clg400-1",
                 ),
             )
-            for stage, extra in {
-                "synthesis": {"constraints": ["clock.xdc"]},
-                "implementation": {"constraints": ["clock.xdc"]},
-                "simulation": {"testbenches": ["tb_counter.sv"], "sim_top": "tb_counter"},
-            }.items():
-                plan = await data(
-                    client, "rp_fpga_build", **{**DEMO_BUILD, "stage": stage}, **extra
-                )
-                check(f"build dry run: {stage} does not execute", plan["executed"] is False)
-            check(
-                "build dry run refuses path escape",
-                await refused(
-                    client, "rp_fpga_build", **{**DEMO_BUILD, "sources": ["../secret.sv"]}
-                ),
-            )
-            check(
-                "build refuses a Tcl-shaped top name",
-                await refused(client, "rp_fpga_build", **{**DEMO_BUILD, "top": "a;exec id"}),
-            )
-            check(
-                "no build directory after dry runs",
-                not (root / ".redpitayacore-builds").exists(),
-            )
-            for tool, arguments in {
-                "rp_fpga_build_status": {},
-                "rp_fpga_build_cancel": {},
-                "rp_fpga_build_report": {"report": "timing"},
-            }.items():
-                check(
-                    f"{tool} refuses unknown job",
-                    await refused(client, tool, job_id="missing", **arguments),
-                )
+            check("no build directory", not (root / ".redpitayacore-builds").exists())
 
-        async with session(RP_PROJECT_ROOT=str(root), RP_ALLOW_PROJECT_WRITE="true") as client:
-            created = await data(
-                client, "rp_fpga_write_source", path="rtl/new.sv", content="// a\n"
-            )
-            check("write: creates in a new directory", created["created"] is True)
-            check(
-                "write refuses replacing without a hash",
-                await refused(client, "rp_fpga_write_source", path="rtl/new.sv", content="b"),
-            )
-            replaced = await data(
-                client,
-                "rp_fpga_write_source",
-                path="rtl/new.sv",
-                content="// b\n",
-                expected_sha256=created["sha256"],
-            )
-            check("write: replaces with current hash", replaced["created"] is False)
-            check(
-                "write refuses stale hash",
-                await refused(
-                    client,
-                    "rp_fpga_write_source",
-                    path="rtl/new.sv",
-                    content="c",
-                    expected_sha256=created["sha256"],
-                ),
-            )
-            check(
-                "write refuses through a symlink",
-                await refused(
-                    client,
-                    "rp_fpga_write_source",
-                    path="linked.sv",
-                    content="x",
-                    expected_sha256="0" * 64,
-                ),
-            )
-            check(
-                "write left the outside file alone",
-                (root.parent / "secret.sv").read_text() == "outside",
-            )
-            leftovers = [item.name for item in (root / "rtl").iterdir() if item.name != "new.sv"]
-            check("write leaves no temp files", not leftovers, leftovers)
+        async with session(
+            RP_PROJECT_ROOT=str(root), RP_ALLOW_PROJECT_WRITE="true", RP_ALLOW_LOCAL_BUILD="true"
+        ) as client:
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            check("legacy flags cannot expose FPGA development tools", not names.intersection({
+                "rp_fpga_write_source", "rp_fpga_build", "rp_fpga_build_status",
+                "rp_fpga_build_cancel", "rp_fpga_build_report", "rp_fpga_ila_plan",
+            }))
+            check("workspace stays read-only", not (await data(client, "rp_fpga_project_info"))["allow_write"])
+            check("write refused", await refused(client, "rp_fpga_write_source", path="new.sv", content="x"))
+            check("build refused", await refused(client, "rp_fpga_build", **DEMO_BUILD, dry_run=False))
+            check("no source created", not (root / "new.sv").exists())
+            check("no build directory", not (root / ".redpitayacore-builds").exists())
 
 
 def phase_jumps(samples: np.ndarray, frequency: int, rate: int) -> tuple[int, float]:
