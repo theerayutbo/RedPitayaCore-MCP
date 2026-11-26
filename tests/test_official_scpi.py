@@ -76,7 +76,9 @@ async def test_official_wire_queries(monkeypatch, query, replies, expected):
     assert received == commands[query]
 
 
-@pytest.mark.parametrize("response", [b"x" * 2048 + b"\r\n", b"partial", b"\r\n", b"OTHER,INSTR,X,Y\r\n"])
+@pytest.mark.parametrize(
+    "response", [b"x" * 2048 + b"\r\n", b"partial", b"\r\n", b"OTHER,INSTR,X,Y\r\n"]
+)
 async def test_bad_response_fails_closed(monkeypatch, response):
     async def fixture(reader, writer):
         try:
@@ -94,3 +96,70 @@ async def test_bad_response_fails_closed(monkeypatch, response):
             await OfficialSCPI(
                 Settings(mode="live", host="127.0.0.1", allow_scpi=True)
             ).read("identity", True)
+
+
+async def test_mock_waveform_and_strict_bounds(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Mock must not open a socket")
+
+    monkeypatch.setattr(asyncio, "open_connection", forbidden)
+    adapter = OfficialSCPI(Settings())
+    result = await adapter.waveform(1, 32, False)
+    assert result["simulated"] is True
+    assert result["sample_count"] == 32
+    assert result["rms_v"] == pytest.approx(0.25 / 2**0.5)
+    for channel, count in ((3, 32), (True, 32), (1, 0), (1, 257), (1, True)):
+        with pytest.raises(ValueError):
+            await adapter.waveform(channel, count, False)
+
+
+@pytest.mark.parametrize(
+    "format_reply, fill_reply, samples, succeeds",
+    [
+        ("ASCII", "1", "{0.1,-0.1,0.2}", True),
+        ("BIN", "1", "{0.1,-0.1,0.2}", False),
+        ("ASCII", "0", "{0.1,-0.1,0.2}", False),
+        ("ASCII", "1", "{0.1,NaN,0.2}", False),
+        ("ASCII", "1", "{0.1,0.2}", False),
+    ],
+)
+async def test_waveform_reads_only_completed_buffer(
+    monkeypatch, format_reply, fill_reply, samples, succeeds
+):
+    received = []
+    replies = {
+        "*IDN?": "REDPITAYA,INSTR,MOCK,0",
+        "ACQ:DATA:FORMAT?": format_reply,
+        "ACQ:DATA:UNITS?": "VOLTS",
+        "ACQ:KEEP:ARM?": "0",
+        "ACQ:TRIG:STAT?": "TD",
+        "ACQ:TRIG:FILL?": fill_reply,
+        "ACQ:SRAT?": "  1953125 Hz",
+        "ACQ:SOUR2:DATA:OLD:N? 3": samples,
+    }
+
+    async def fixture(reader, writer):
+        try:
+            while line := await reader.readline():
+                command = line.decode("ascii").strip()
+                received.append(command)
+                writer.write(replies[command].encode("ascii") + b"\r\n")
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(fixture, "127.0.0.1", 0)
+    monkeypatch.setattr(official_scpi, "SCPI_PORT", server.sockets[0].getsockname()[1])
+    adapter = OfficialSCPI(Settings(mode="live", host="127.0.0.1", allow_scpi=True))
+    async with server:
+        if succeeds:
+            result = await adapter.waveform(2, 3, True)
+            assert result["samples"] == [0.1, -0.1, 0.2]
+            assert result["sample_rate_hz"] == 1953125
+        else:
+            with pytest.raises(ValueError):
+                await adapter.waveform(2, 3, True)
+    assert all("?" in command for command in received)
+    if format_reply != "ASCII" or fill_reply != "1":
+        assert "ACQ:SOUR2:DATA:OLD:N? 3" not in received
