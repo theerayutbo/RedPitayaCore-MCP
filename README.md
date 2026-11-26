@@ -30,10 +30,10 @@ Mock mode is default and makes no network calls. Live SCPI requires
 `RP_ALLOW_SCPI=true`, disabled SDR RX/TX permissions, and per-call
 `acknowledge_exclusive_scpi=true` after independently confirming an already-running
 official SCPI server, v0.94 image and exclusive access. Never start/stop a service
-or switch images automatically. Identity responses do not prove the active image.
-The acquisition query reads decimation, trigger and buffer-fill state sequentially;
+or switch images automatically. Identity responses do not prove the active image or board model.
+The acquisition query checks the SCPI identity response first, then reads decimation, trigger and buffer-fill state sequentially;
 it does not start acquisition, read waveform samples or change outputs.
-The SCPI connection is unauthenticated; use only a trusted isolated network.
+The operator must ensure no other client changes the image or owns the hardware. The SCPI connection is unauthenticated; use only a trusted isolated network.
 Direct MMIO, C/Python API, streaming and full instrument control remain future work.
 
 Sources: [official SCPI documentation](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/scpi.html),
