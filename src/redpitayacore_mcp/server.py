@@ -18,11 +18,19 @@ from . import __version__
 from .config import Settings
 from .fpga_tools import FPGAService, register_fpga_tools
 from .service import SIDE_EFFECTS, TX_SIDE_EFFECTS, Service
+from .workspace import FPGAWorkspace
 
 
 def build_server(config: Settings) -> FastMCP[Any]:
     service = Service(config)
     fpga = FPGAService(config, service)
+    ps = FPGAWorkspace(
+        config.ps_project_root,
+        config.allow_ps_project_write,
+        source_extensions=frozenset({".py", ".c", ".h", ".cpp", ".hpp"}),
+        artifact_extensions=frozenset(),
+        report_extensions=frozenset(),
+    )
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
@@ -174,6 +182,26 @@ def build_server(config: Settings) -> FastMCP[Any]:
             }
         )
 
+    @mcp.tool(annotations=local)
+    def rp_ps_project_info() -> dict[str, Any]:
+        """Inspect the operator-selected local PS software workspace; no board I/O."""
+        return ps.info()
+
+    @mcp.tool(annotations=local)
+    def rp_ps_read_source(path: str) -> dict[str, Any]:
+        """Read bounded local Python/C/C++ source and SHA-256; no execution."""
+        return ps.read_source(path)
+
+    @mcp.tool(annotations=changes)
+    def rp_ps_write_source(
+        path: str,
+        content: Annotated[str, Field(max_length=262144)],
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        """Write local PS source with operator permission and hash guard; no execution."""
+        return ps.write_source(path, content, expected_sha256)
+
+    # Compatibility bridge until the standalone FPGA server passes parity review.
     register_fpga_tools(mcp, fpga)
     return mcp
 
