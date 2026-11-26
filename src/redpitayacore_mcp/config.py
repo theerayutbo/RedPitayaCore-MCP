@@ -117,6 +117,8 @@ class Settings:
             if env.get("RP_VIVADO_EXECUTABLE")
             else None,
             build_timeout=float(env.get("RP_BUILD_TIMEOUT", "300")),
-            ps_project_root=Path(env["RP_PS_PROJECT_ROOT"]) if env.get("RP_PS_PROJECT_ROOT") else None,
+            ps_project_root=Path(env["RP_PS_PROJECT_ROOT"])
+            if env.get("RP_PS_PROJECT_ROOT")
+            else None,
             allow_ps_project_write=_flag(env, "RP_ALLOW_PS_PROJECT_WRITE"),
         )
