@@ -31,8 +31,12 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
             await session.initialize()
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
             assert not {
-                "rp_fpga_build", "rp_fpga_write_source", "rp_fpga_build_cancel",
-                "rp_fpga_build_status", "rp_fpga_build_report", "rp_fpga_ila_plan",
+                "rp_fpga_build",
+                "rp_fpga_write_source",
+                "rp_fpga_build_cancel",
+                "rp_fpga_build_status",
+                "rp_fpga_build_report",
+                "rp_fpga_ila_plan",
             }.intersection(tools)
             assert tools["rp_fpga_read_source"].annotations.readOnlyHint is True
             caps = await session.call_tool("rp_fpga_capabilities", {})
@@ -52,7 +56,9 @@ async def test_fpga_tools_over_real_stdio_are_local_and_hardware_plans_never_exe
                 },
             )
             assert updated.isError
-            assert (tmp_path / "counter.sv").read_text() == "module counter(input clk); endmodule\n"
+            assert (tmp_path / "counter.sv").read_text() == (
+                "module counter(input clk); endmodule\n"
+            )
             stale = await session.call_tool(
                 "rp_fpga_write_source",
                 {"path": "counter.sv", "content": "stale", "expected_sha256": sha},
