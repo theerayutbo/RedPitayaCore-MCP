@@ -115,6 +115,7 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_official_capabilities",
                 "rp_scpi_identity",
                 "rp_scpi_acquisition_status",
+                "rp_scpi_waveform_read",
                 "rp_ps_project_info",
                 "rp_ps_read_source",
                 "rp_ps_write_source",
@@ -141,6 +142,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
             assert not scpi.isError
             assert scpi.structuredContent["simulated"] is True
             assert scpi.structuredContent["decimation"] == 64
+            wave = await session.call_tool("rp_scpi_waveform_read", {"sample_count": 8})
+            assert not wave.isError
+            assert wave.structuredContent["sample_count"] == 8
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
             assert annotations["rp_rx_read"].readOnlyHint is False
