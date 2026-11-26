@@ -14,11 +14,11 @@ MAX_LINE = 1024
 Query = Literal["identity", "acquisition_status"]
 _QUERIES: dict[Query, tuple[str, ...]] = {
     "identity": ("*IDN?", "SYST:VERS?"),
-    "acquisition_status": ("ACQ:DEC:Factor?", "ACQ:TRIG:STAT?", "ACQ:TRIG:FILL?"),
+    "acquisition_status": ("*IDN?", "ACQ:DEC:Factor?", "ACQ:TRIG:STAT?", "ACQ:TRIG:FILL?"),
 }
 _MOCK: dict[Query, tuple[str, ...]] = {
-    "identity": ("RedPitaya,STEMlab 125-14,MOCK,0", "mock-version"),
-    "acquisition_status": ("64", "WAIT", "0"),
+    "identity": ("REDPITAYA,INSTR,MOCK,0", "mock-version"),
+    "acquisition_status": ("REDPITAYA,INSTR,MOCK,0", "64", "WAIT", "0"),
 }
 
 
@@ -61,10 +61,18 @@ async def _exchange(config: Settings, query: Query) -> tuple[str, ...]:
                 response = raw[:-2].decode("ascii", errors="strict").strip()
                 if not response or any(not 32 <= ord(char) <= 126 for char in response):
                     raise ValueError("Empty or non-printable SCPI response")
+                if command == "*IDN?":
+                    _validate_identity(response)
                 responses.append(response)
         return tuple(responses)
     finally:
         await _close_writer(writer)
+
+
+def _validate_identity(identity: str) -> None:
+    fields = identity.split(",")
+    if len(fields) != 4 or fields[:2] != ["REDPITAYA", "INSTR"]:
+        raise ValueError("Unexpected official SCPI identity response")
 
 
 class OfficialSCPI:
@@ -76,9 +84,7 @@ class OfficialSCPI:
         if query not in _QUERIES:
             raise ValueError("Unknown official SCPI query")
         live = self.config.mode == "live"
-        if live and (
-            not self.config.allow_scpi or acknowledge_exclusive_scpi is not True
-        ):
+        if live and (not self.config.allow_scpi or acknowledge_exclusive_scpi is not True):
             raise PermissionError(
                 "Set RP_ALLOW_SCPI=true and acknowledge_exclusive_scpi=true only after "
                 "confirming the operator-started SCPI server, v0.94 image and exclusive access"
@@ -96,10 +102,10 @@ class OfficialSCPI:
         }
         if query == "identity":
             identity, version = values
-            if not identity.upper().startswith("REDPITAYA,"):
-                raise ValueError("Unexpected SCPI identity response")
+            _validate_identity(identity)
             return {**result, "identity": identity, "api_version_reported": version}
-        decimation, trigger, fill = values
+        identity, decimation, trigger, fill = values
+        _validate_identity(identity)
         if not decimation.isascii() or not decimation.isdecimal() or len(decimation) > 5:
             raise ValueError("Unexpected decimation response")
         factor = int(decimation)
@@ -109,6 +115,7 @@ class OfficialSCPI:
             raise ValueError("Unexpected trigger/fill response")
         return {
             **result,
+            "identity": identity,
             "decimation": factor,
             "trigger_state": trigger,
             "buffer_full": fill == "1",
