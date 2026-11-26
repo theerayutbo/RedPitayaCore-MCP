@@ -34,7 +34,15 @@ or switch images automatically. Identity responses do not prove the active image
 The acquisition query checks the SCPI identity response first, then reads decimation, trigger and buffer-fill state sequentially;
 it does not start acquisition, read waveform samples or change outputs.
 The operator must ensure no other client changes the image or owns the hardware. The SCPI connection is unauthenticated; use only a trusted isolated network.
-Direct MMIO, C/Python API, streaming and full instrument control remain future work.
+`rp_scpi_waveform_read` retrieves 1–256 oldest samples on channel 1 or 2 from a
+previously completed acquisition using the vendor's SCPI data query. It checks
+ASCII format, VOLTS units, keep-arm off, triggered and filled buffer, then reads
+the reported sample rate and returns voltage samples with min/max/mean/RMS.
+No setters, reset, start, trigger or stop are sent. The operator must perform
+the acquisition independently and ensure exclusive ownership; state checks
+cannot prove an atomic snapshot or absence of competing clients. Live waveform
+reading is not yet board-validated. Direct MMIO, C/Python API, streaming and
+full instrument control remain future work.
 
 Sources: [official SCPI documentation](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/scpi.html),
 [official acquisition commands](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/command_list/commands-acq.html),
@@ -178,7 +186,7 @@ authentication. The project does not store keys or passwords.
 
 ## MCP tools
 
-The server exposes 28 tools: 12 device tools, 3 PS workspace tools, 10 read-only FPGA inspection tools and 3 official API tools.
+The server exposes 29 tools: 12 device tools, 3 PS workspace tools, 10 read-only FPGA inspection tools and 4 official API tools.
 
 ### Device and RX tools
 
