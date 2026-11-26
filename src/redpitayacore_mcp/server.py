@@ -225,6 +225,15 @@ def build_server(config: Settings) -> FastMCP[Any]:
         """Read decimation, trigger and fill state; does not start or reset acquisition."""
         return await scpi.read("acquisition_status", acknowledge_exclusive_scpi)
 
+    @mcp.tool(annotations=read_only)
+    async def rp_scpi_waveform_read(
+        channel: Annotated[int, Field(strict=True, ge=1, le=2)] = 1,
+        sample_count: Annotated[int, Field(strict=True, ge=1, le=256)] = 128,
+        acknowledge_exclusive_scpi: Annotated[bool, Field(strict=True)] = False,
+    ) -> dict[str, Any]:
+        """Read oldest samples from a completed ASCII/VOLTS acquisition; never start it."""
+        return await scpi.waveform(channel, sample_count, acknowledge_exclusive_scpi)
+
     # Only the read-only FPGA inspection surface is registered by Core.
     register_fpga_tools(mcp, fpga)
     return mcp
