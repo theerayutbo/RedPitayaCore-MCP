@@ -42,6 +42,8 @@ class Settings:
     allow_local_build: bool = False
     vivado_executable: Path | None = None
     build_timeout: float = 300
+    ps_project_root: Path | None = None
+    allow_ps_project_write: bool = False
 
     def __post_init__(self) -> None:
         if self.rx_sample_order not in {"glibc_memcpy", "raw"}:
@@ -74,6 +76,8 @@ class Settings:
             raise ValueError("RP_TIMEOUT must be finite, from 0.1 to 10 seconds")
         if self.ssh_user is not None and not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", self.ssh_user):
             raise ValueError("RP_SSH_USER must be a simple Unix account name")
+        if self.ps_project_root is not None and not self.ps_project_root.is_absolute():
+            raise ValueError("RP_PS_PROJECT_ROOT must be an absolute local directory")
         if self.project_root is not None and not self.project_root.is_absolute():
             raise ValueError("RP_PROJECT_ROOT must be an absolute local project directory")
         if self.vivado_executable is not None and not self.vivado_executable.is_absolute():
@@ -113,4 +117,6 @@ class Settings:
             if env.get("RP_VIVADO_EXECUTABLE")
             else None,
             build_timeout=float(env.get("RP_BUILD_TIMEOUT", "300")),
+            ps_project_root=Path(env["RP_PS_PROJECT_ROOT"]) if env.get("RP_PS_PROJECT_ROOT") else None,
+            allow_ps_project_write=_flag(env, "RP_ALLOW_PS_PROJECT_WRITE"),
         )
