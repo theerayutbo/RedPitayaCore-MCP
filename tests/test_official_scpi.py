@@ -38,8 +38,8 @@ async def test_live_requires_operator_and_call_gates(monkeypatch):
 @pytest.mark.parametrize(
     "query, replies, expected",
     [
-        ("identity", [b"RedPitaya,STEMlab,MOCK,0", b"3.00-57"], "identity"),
-        ("acquisition_status", [b"128", b"TD", b"1"], "buffer_full"),
+        ("identity", [b"REDPITAYA,INSTR,MOCK,0", b"3.00-57"], "identity"),
+        ("acquisition_status", [b"REDPITAYA,INSTR,MOCK,0", b"128", b"TD", b"1"], "buffer_full"),
     ],
 )
 async def test_official_wire_queries(monkeypatch, query, replies, expected):
@@ -67,6 +67,7 @@ async def test_official_wire_queries(monkeypatch, query, replies, expected):
     commands = {
         "identity": [b"*IDN?\r\n", b"SYST:VERS?\r\n"],
         "acquisition_status": [
+            b"*IDN?\r\n",
             b"ACQ:DEC:Factor?\r\n",
             b"ACQ:TRIG:STAT?\r\n",
             b"ACQ:TRIG:FILL?\r\n",
@@ -75,7 +76,7 @@ async def test_official_wire_queries(monkeypatch, query, replies, expected):
     assert received == commands[query]
 
 
-@pytest.mark.parametrize("response", [b"x" * 2048 + b"\r\n", b"partial", b"\r\n"])
+@pytest.mark.parametrize("response", [b"x" * 2048 + b"\r\n", b"partial", b"\r\n", b"OTHER,INSTR,X,Y\r\n"])
 async def test_bad_response_fails_closed(monkeypatch, response):
     async def fixture(reader, writer):
         try:
