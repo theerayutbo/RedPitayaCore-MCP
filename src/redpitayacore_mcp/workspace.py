@@ -153,7 +153,7 @@ class FPGAWorkspace:
 
     def read_report(self, path: str) -> dict[str, Any]:
         """Read one bounded UTF-8 report snapshot without interpreting its result."""
-        parts = self._validated_parts(path, REPORT_EXTENSIONS, "report")
+        parts = self._validated_parts(path, self._report_extensions, "report")
         data = self._read_regular(parts, REPORT_MAX_BYTES, "256 KiB")
         return self._text_result(path, data)
 
@@ -258,7 +258,7 @@ class FPGAWorkspace:
 
     def inspect_artifact(self, path: str, expected_sha256: str | None = None) -> dict[str, Any]:
         """Hash a bounded build artifact without making hardware compatibility claims."""
-        parts = self._validated_parts(path, ARTIFACT_EXTENSIONS, "artifact")
+        parts = self._validated_parts(path, self._artifact_extensions, "artifact")
         expected = self._validate_expected_hash(expected_sha256)
         digest, size = self._hash_regular(parts, ARTIFACT_MAX_BYTES, "64 MiB")
         formats = {
