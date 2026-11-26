@@ -92,8 +92,7 @@ with SCPI in one configuration. Other clients are not interlocked; the operator
 must ensure exclusivity. SCPI is unauthenticated and must use a trusted isolated
 network. Only fixed query strings are sent, with bounded ASCII CRLF replies
 and a total deadline. The identity reply is checked before acquisition queries,
-but cannot prove board, firmware, image, or server authenticity. No arbitrary
-SCPI, reset, acquisition start, service start/stop, MMIO or FPGA loading.
+but cannot prove board, firmware, image, or server authenticity. Waveform reads are limited to 256 ASCII/VOLTS samples from an already triggered, filled buffer with keep-arm off; input count and channel are strictly validated. No arbitrary SCPI, reset, acquisition start, service start/stop, MMIO or FPGA loading.
 
 ## Supported versions
 
