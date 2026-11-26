@@ -82,6 +82,7 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
     env = {**os.environ, "RP_MODE": "mock", "PYTHONPATH": "src"}
     # Do not inherit the operator's optional live permission flags.
     env["RP_ALLOW_RX"] = "false"
+    env["RP_ALLOW_SCPI"] = "false"
     env["RP_ALLOW_LIFECYCLE"] = "false"
     env["RP_PS_PROJECT_ROOT"] = ""
     env["RP_ALLOW_PS_PROJECT_WRITE"] = "false"
@@ -111,6 +112,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_tx_start",
                 "rp_tx_status",
                 "rp_tx_stop",
+                "rp_official_capabilities",
+                "rp_scpi_identity",
+                "rp_scpi_acquisition_status",
                 "rp_ps_project_info",
                 "rp_ps_read_source",
                 "rp_ps_write_source",
@@ -133,6 +137,10 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_ps_write_source", {"path": "a.py", "content": "x=1"}
             )
             assert denied.isError
+            scpi = await session.call_tool("rp_scpi_acquisition_status", {})
+            assert not scpi.isError
+            assert scpi.structuredContent["simulated"] is True
+            assert scpi.structuredContent["decimation"] == 64
             annotations = {tool.name: tool.annotations for tool in listed.tools}
             assert annotations["rp_rx_connect"].readOnlyHint is False
             assert annotations["rp_rx_read"].readOnlyHint is False
