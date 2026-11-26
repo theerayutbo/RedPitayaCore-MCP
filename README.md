@@ -21,6 +21,26 @@ traffic. Its live surface is deliberately narrow: bounded metadata and connectio
 diagnostics, optional fixed read-only SSH diagnostics, and explicitly enabled RX
 control/data. The FPGA inspection surface reads local HDL, constraints, artifacts and reports, and provides non-executing register and hardware plans. FPGA design and build belong to the separate FPGA-MCP. No live MMIO, image loading or ILA capture is implemented.
 
+## Official-first integration (phase 1)
+
+Use the vendor's existing SCPI API instead of reimplementing hardware drivers.
+`rp_official_capabilities` lists implemented adapters, not detected hardware.
+`rp_scpi_identity` and `rp_scpi_acquisition_status` expose fixed queries on TCP 5000.
+Mock mode is default and makes no network calls. Live SCPI requires
+`RP_ALLOW_SCPI=true`, disabled SDR RX/TX permissions, and per-call
+`acknowledge_exclusive_scpi=true` after independently confirming an already-running
+official SCPI server, v0.94 image and exclusive access. Never start/stop a service
+or switch images automatically. Identity responses do not prove the active image.
+The acquisition query reads decimation, trigger and buffer-fill state sequentially;
+it does not start acquisition, read waveform samples or change outputs.
+The SCPI connection is unauthenticated; use only a trusted isolated network.
+Direct MMIO, C/Python API, streaming and full instrument control remain future work.
+
+Sources: [official SCPI documentation](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/scpi.html),
+[official acquisition commands](https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/command_list/commands-acq.html),
+[Release-2026.1 SCPI command table](https://github.com/RedPitaya/RedPitaya/blob/Release-2026.1/scpi-server/src/scpi-commands.cpp).
+Live hardware verification of this adapter is pending.
+
 ## Safety boundary
 
 - `RP_MODE=mock` is the default and requires no hardware.
@@ -158,7 +178,7 @@ authentication. The project does not store keys or passwords.
 
 ## MCP tools
 
-The server exposes 25 tools: 12 device tools, 3 PS workspace tools and 10 read-only FPGA inspection tools.
+The server exposes 28 tools: 12 device tools, 3 PS workspace tools, 10 read-only FPGA inspection tools and 3 official API tools.
 
 ### Device and RX tools
 
