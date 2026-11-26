@@ -83,6 +83,18 @@ frequency is lawful or safe. Use suitable attenuation, filtering, grounding,
 and RF operating practices. RX connection setup changes device state even though
 it does not transmit RF.
 
+## Official SCPI adapter
+
+SCPI is off by default. Live access requires RP_ALLOW_SCPI and explicit per-call
+operator confirmation of the already-running official SCPI service, v0.94
+image and exclusive ownership. Live SDR RX/TX permissions cannot be combined
+with SCPI in one configuration. Other clients are not interlocked; the operator
+must ensure exclusivity. SCPI is unauthenticated and must use a trusted isolated
+network. Only fixed query strings are sent, with bounded ASCII CRLF replies
+and a total deadline. The identity reply is checked before acquisition queries,
+but cannot prove board, firmware, image, or server authenticity. No arbitrary
+SCPI, reset, acquisition start, service start/stop, MMIO or FPGA loading.
+
 ## Supported versions
 
 Security fixes are applied to the current default branch. This early project has
