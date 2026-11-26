@@ -39,7 +39,18 @@ _WRITE_CONSISTENCY: Final = "serialized_cooperating_writers_only"
 class FPGAWorkspace:
     """Provide bounded access to one explicitly configured local FPGA project."""
 
-    def __init__(self, root: Path | None, allow_write: bool = False) -> None:
+    def __init__(
+        self,
+        root: Path | None,
+        allow_write: bool = False,
+        *,
+        source_extensions: frozenset[str] = SOURCE_EXTENSIONS,
+        artifact_extensions: frozenset[str] = ARTIFACT_EXTENSIONS,
+        report_extensions: frozenset[str] = REPORT_EXTENSIONS,
+    ) -> None:
+        self._source_extensions = source_extensions
+        self._artifact_extensions = artifact_extensions
+        self._report_extensions = report_extensions
         self._allow_write = allow_write
         if root is None:
             self._root: Path | None = None
@@ -70,9 +81,9 @@ class FPGAWorkspace:
             "available": self._root is not None,
             "root": str(self._root) if self._root is not None else None,
             "allow_write": self._allow_write,
-            "source_extensions": sorted(SOURCE_EXTENSIONS),
-            "artifact_extensions": sorted(ARTIFACT_EXTENSIONS),
-            "report_extensions": sorted(REPORT_EXTENSIONS),
+            "source_extensions": sorted(self._source_extensions),
+            "artifact_extensions": sorted(self._artifact_extensions),
+            "report_extensions": sorted(self._report_extensions),
             "source_max_bytes": SOURCE_MAX_BYTES,
             "report_max_bytes": REPORT_MAX_BYTES,
             "artifact_max_bytes": ARTIFACT_MAX_BYTES,
@@ -88,7 +99,7 @@ class FPGAWorkspace:
         files: list[str] = []
         truncated = False
         scanned = 0
-        allowed = SOURCE_EXTENSIONS | ARTIFACT_EXTENSIONS
+        allowed = self._source_extensions | self._artifact_extensions
         directories: list[tuple[str, ...]] = [()]
         while directories and scanned < INFO_SCAN_LIMIT and len(files) < FILE_LIST_LIMIT:
             directory = directories.pop()
@@ -131,12 +142,12 @@ class FPGAWorkspace:
         descriptor-backed snapshot because filesystem state can change after this method returns.
         """
         root = self._require_root()
-        parts = self._validate_path(path, SOURCE_EXTENSIONS, "source")
+        parts = self._validate_path(path, self._source_extensions, "source")
         return root.joinpath(*parts)
 
     def read_source(self, path: str) -> dict[str, Any]:
         """Read one bounded UTF-8 HDL or constraint source snapshot."""
-        parts = self._validated_parts(path, SOURCE_EXTENSIONS, "source")
+        parts = self._validated_parts(path, self._source_extensions, "source")
         data = self._read_regular(parts, SOURCE_MAX_BYTES, "256 KiB")
         return self._text_result(path, data)
 
@@ -157,7 +168,7 @@ class FPGAWorkspace:
         self._require_root()
         if not self._allow_write:
             raise PermissionError("FPGA workspace writes are disabled by operator configuration")
-        parts = self._validate_path(path, SOURCE_EXTENSIONS, "source")
+        parts = self._validate_path(path, self._source_extensions, "source")
         expected = self._validate_expected_hash(expected_sha256)
         if not isinstance(content, str):
             raise TypeError("content must be a string")
