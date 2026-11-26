@@ -297,13 +297,25 @@ async def project_tools() -> None:
             RP_PROJECT_ROOT=str(root), RP_ALLOW_PROJECT_WRITE="true", RP_ALLOW_LOCAL_BUILD="true"
         ) as client:
             names = {tool.name for tool in (await client.list_tools()).tools}
-            check("legacy flags cannot expose FPGA development tools", not names.intersection({
-                "rp_fpga_write_source", "rp_fpga_build", "rp_fpga_build_status",
-                "rp_fpga_build_cancel", "rp_fpga_build_report", "rp_fpga_ila_plan",
-            }))
-            check("workspace stays read-only", not (await data(client, "rp_fpga_project_info"))["allow_write"])
-            check("write refused", await refused(client, "rp_fpga_write_source", path="new.sv", content="x"))
-            check("build refused", await refused(client, "rp_fpga_build", **DEMO_BUILD, dry_run=False))
+            excluded = {
+                "rp_fpga_write_source",
+                "rp_fpga_build",
+                "rp_fpga_build_status",
+                "rp_fpga_build_cancel",
+                "rp_fpga_build_report",
+                "rp_fpga_ila_plan",
+            }
+            check("legacy flags cannot expose FPGA development tools", not names & excluded)
+            info = await data(client, "rp_fpga_project_info")
+            check("workspace stays read-only", not info["allow_write"])
+            check(
+                "write refused",
+                await refused(client, "rp_fpga_write_source", path="new.sv", content="x"),
+            )
+            check(
+                "build refused",
+                await refused(client, "rp_fpga_build", **DEMO_BUILD, dry_run=False),
+            )
             check("no source created", not (root / "new.sv").exists())
             check("no build directory", not (root / ".redpitayacore-builds").exists())
 
