@@ -1,5 +1,14 @@
 # RedPitayaCore-MCP
 
+## Core-first PS/PL architecture
+
+Core is the general-purpose software development and device runtime MCP. It owns PS-side Python/C/C++ applications, drivers, DSP, diagnostics and operation of existing PL engines. The optional [RedPitayaFPGA-MCP](https://github.com/theerayutbo/RedPitayaFPGA-MCP) owns RTL, IP, hardware interfaces, simulation, synthesis, implementation and Vivado. Core needs no Vivado for PS development. Existing FPGA tools remain temporarily for compatibility pending extraction parity; live loading, arbitrary MMIO and DMA control remain unimplemented.
+
+### PS software workspace
+
+Set `RP_PS_PROJECT_ROOT` to an absolute existing local directory, separate from your FPGA workspace. `RP_ALLOW_PS_PROJECT_WRITE=true` enables bounded local source writes (default false). The `rp_ps_project_info`, `rp_ps_read_source` and `rp_ps_write_source` tools support Python, C, and C++ source/header files. Replacements require the current SHA-256; no source is executed, built, transferred or deployed by these tools. POSIX workspace constraints and the requirement for quiescent external editors still apply. Use a source-only workspace with no secrets. This is a first-stage PS development capability, not remote code execution or a complete PS SDK.
+
+
 A local MCP server for safe Red Pitaya diagnostics, RX access, and bounded
 offline FPGA development from Claude Code.
 It targets an operator-managed STEMlab 125-14 running official Red Pitaya OS
