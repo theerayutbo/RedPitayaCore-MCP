@@ -48,8 +48,18 @@ TX_FLUSH_BLOCKS = 3
 TX_START_SILENCE_S = 0.05
 # The board FIFO holds up to this many samples behind the socket before the DAC.
 TX_FIFO_SAMPLES = 6144
+# Zynq XADC die temperature via the Linux IIO driver: prints raw, offset and scale (one per
+# line) of the device named "xadc". Read-only sysfs; the device index differs between OS
+# images, hence the loop.
+XADC_TEMPERATURE_COMMAND = (
+    "for d in /sys/bus/iio/devices/iio:device*; do "
+    'if [ -r "$d/name" ] && [ "$(cat "$d/name")" = xadc ]; then '
+    'cat "$d/in_temp0_raw" "$d/in_temp0_offset" "$d/in_temp0_scale"; fi; done; true'
+)
+
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
+    "xadc_temperature": XADC_TEMPERATURE_COMMAND,
     # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
     # devicetree model node.
     "board_model": "grep '^\"name\"' /tmp/sysinfo.json",
@@ -556,3 +566,42 @@ class TxBurst:
         self.stop_requested.set()
         if self.task is not None:
             await asyncio.wait({self.task})
+
+
+def parse_xadc_temperature(text: str) -> dict[str, Any]:
+    """Parse raw/offset/scale lines from XADC_TEMPERATURE_COMMAND into degrees Celsius.
+
+    Linux IIO convention: value = (raw + offset) * scale, in milli-degrees Celsius. Remote text is
+    untrusted: anything that is not exactly three finite numbers in a plausible range is rejected.
+    """
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if len(lines) != 3:
+        return {"available": False,
+                "reason": "XADC temperature not found (expected raw, offset, scale)"}
+    try:
+        raw, offset, scale = (float(v) for v in lines)
+    except ValueError:
+        return {"available": False, "reason": "XADC temperature lines are not numeric"}
+    celsius = (raw + offset) * scale / 1000.0
+    if not (-40.0 <= celsius <= 125.0):
+        return {"available": False, "reason": "XADC temperature outside the Zynq operating range"}
+    return {"available": True, "die_temperature_c": round(celsius, 3), "raw": raw,
+            "offset": offset, "scale": scale}
+
+
+async def read_board_temperature(config: Settings) -> dict[str, Any]:
+    """Zynq die temperature through the allowlisted read-only SSH command (needs RP_SSH_USER)."""
+    if config.mode != "live" or not config.ssh_user:
+        return {"available": False, "reason": "Optional read-only SSH disabled; set RP_SSH_USER"}
+    try:
+        result = await _ssh_command(config, XADC_TEMPERATURE_COMMAND)
+    except (OSError, TimeoutError, ValueError):
+        return {"available": False, "reason": "SSH unavailable, timed out or response too large"}
+    if not result.get("available"):
+        return {"available": False, "reason": result.get("reason", "SSH command failed")}
+    parsed = parse_xadc_temperature(str(result.get("text", "")))
+    parsed["note"] = (
+        "Die temperature of the Zynq SoC: a proxy for board temperature, not the crystal "
+        "itself. Remote text is untrusted diagnostic data."
+    )
+    return parsed
