@@ -173,7 +173,7 @@ FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 | `rp_device_diagnostics` | Reads bounded HTTP application/device metadata |
 | `rp_connection_probe` | Connects to the configured SDR port, sends no bytes, and closes |
 | `rp_system_diagnostics` | Runs fixed read-only OS/app/process/FPGA SSH checks; unavailable unless configured |
-| `rp_board_health` | One fixed read-only SSH command: Zynq die temperature, six supply rails (V, with a nominal-range flag), uptime, load average and eth0 error counters; never reads MAC or DNA; unavailable unless `RP_SSH_USER` is set |
+| `rp_board_health` | One fixed read-only SSH command: Zynq die temperature, six supply rails (V, with a nominal-range flag), uptime, load average and eth0 error counters; with `include_calibration=true` also the EEPROM calibration via `calib -rv` (read mode only); never reads MAC or DNA; unavailable unless `RP_SSH_USER` is set |
 | `rp_app_lifecycle` | Plans `start` or `stop`; `dry_run=true` by default; execution is mock-only |
 | `rp_rx_connect` | Opens RX control/data with validated frequency and rate; live use requires both permission gates |
 | `rp_rx_read` | Reads bounded little-endian float32 I/Q; defaults to 2,048 samples and 8 previews |

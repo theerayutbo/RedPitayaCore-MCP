@@ -27,6 +27,7 @@ from .transport import (
     RxConnection,
     TxBurst,
     probe_tcp,
+    read_board_calibration,
     read_board_health,
     read_system,
 )
@@ -201,7 +202,7 @@ class Service:
         async with self.lock:
             return {"mode": "live", "simulated": False, **await read_system(self.config)}
 
-    async def board_health(self) -> dict[str, Any]:
+    async def board_health(self, include_calibration: bool = False) -> dict[str, Any]:
         if self.config.mode == "mock":
             return {
                 "mode": "mock",
@@ -212,7 +213,10 @@ class Service:
                 "note": "Simulated value; mock mode never contacts a board.",
             }
         async with self.lock:
-            return {"mode": "live", "simulated": False, **await read_board_health(self.config)}
+            result = {"mode": "live", "simulated": False, **await read_board_health(self.config)}
+            if include_calibration:
+                result["calibration"] = await read_board_calibration(self.config)
+            return result
 
     async def lifecycle(self, action: str, dry_run: bool) -> dict[str, Any]:
         if action not in {"start", "stop"}:

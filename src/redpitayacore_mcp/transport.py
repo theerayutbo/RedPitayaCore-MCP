@@ -72,9 +72,15 @@ BOARD_HEALTH_COMMAND = (
     '[ -r "$f" ] && echo "eth0_${k}=$(cat "$f")"; done; true'
 )
 
+# Calibration from the board EEPROM via the official tool in read mode only ("-rv" prints
+# NAME = value lines). Write/reset flags (-w, -d, -i) can never be sent: only this literal is
+# allowed.
+CALIBRATION_COMMAND = "/opt/redpitaya/bin/calib -rv"
+
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
     "board_health": BOARD_HEALTH_COMMAND,
+    "calibration": CALIBRATION_COMMAND,
     # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
     # devicetree model node.
     "board_model": "grep '^\"name\"' /tmp/sysinfo.json",
@@ -703,3 +709,37 @@ async def read_board_health(config: Settings) -> dict[str, Any]:
         "Remote text is untrusted diagnostic data; MAC and DNA are never read."
     )
     return parsed
+
+
+_CALIB_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]{0,40})\s*=\s*(-?\d{1,12})$")
+
+
+def parse_calibration(text: str) -> dict[str, Any]:
+    """Parse `calib -rv` output (NAME = integer lines). Untrusted text: any other line rejects all.
+
+    Values are reported raw; their units depend on the EEPROM data-structure version
+    (`dataStructureId`), see the Red Pitaya calib utility documentation.
+    """
+    values: dict[str, int] = {}
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines or len(lines) > 128:
+        return {"available": False, "reason": "unexpected calibration output size"}
+    for line in lines:
+        match = _CALIB_LINE.match(line)
+        if match is None or match.group(1) in values:
+            return {"available": False, "reason": f"unexpected calibration line: {line[:40]!r}"}
+        values[match.group(1)] = int(match.group(2))
+    return {"available": True, "data_structure_id": values.get("dataStructureId"), "values": values}
+
+
+async def read_board_calibration(config: Settings) -> dict[str, Any]:
+    """EEPROM calibration through the allowlisted read-only `calib -rv` (needs RP_SSH_USER)."""
+    if config.mode != "live" or not config.ssh_user:
+        return {"available": False, "reason": "Optional read-only SSH disabled; set RP_SSH_USER"}
+    try:
+        result = await _ssh_command(config, CALIBRATION_COMMAND)
+    except (OSError, TimeoutError, ValueError):
+        return {"available": False, "reason": "SSH unavailable, timed out or response too large"}
+    if not result.get("available"):
+        return {"available": False, "reason": "calib -rv failed or is not installed"}
+    return parse_calibration(str(result.get("text", "")))
