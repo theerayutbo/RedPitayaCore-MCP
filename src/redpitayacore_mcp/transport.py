@@ -6,14 +6,17 @@ import asyncio
 import contextlib
 import json
 import math
+import os
 import re
+import shutil
 import socket
+import tempfile
 from typing import Any
 
 import httpx
 import numpy as np
 
-from .config import Settings
+from .config import Settings, ssh_password_for
 from .protocol import (
     MAX_SAMPLES,
     PTT_HIGH,
@@ -176,59 +179,84 @@ class DeviceHTTP:
                 return json.loads(body)
 
 
+def _make_askpass_helper() -> tuple[str, str]:
+    """Private 0700 dir with a helper printing $RP_ASKPASS_SECRET (no secret on disk)."""
+    askpass_dir = tempfile.mkdtemp(prefix="rp-askpass-")
+    helper = os.path.join(askpass_dir, "askpass")
+    with open(helper, "w", encoding="ascii") as handle:
+        handle.write('#!/bin/sh\nprintf \'%s\\n\' "$RP_ASKPASS_SECRET"\n')
+    os.chmod(helper, 0o700)
+    return askpass_dir, helper
+
+
 async def _ssh_command(config: Settings, command: str) -> dict[str, Any]:
     host = _require_live(config)
     if command not in SSH_COMMANDS.values() or not config.ssh_user:
         raise ValueError("SSH requires an allowlisted command and RP_SSH_USER")
     # Fixed argv, no local shell. Remote command is a literal from SSH_COMMANDS.
-    process = await asyncio.create_subprocess_exec(
-        "ssh",
-        "-F",
-        "/dev/null",
-        "-T",
-        "-n",
-        "-p",
-        str(config.ssh_port),
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "PasswordAuthentication=no",
-        "-o",
-        "KbdInteractiveAuthentication=no",
-        "-o",
-        "ClearAllForwardings=yes",
-        "-o",
-        "PermitLocalCommand=no",
-        "-o",
-        f"ConnectTimeout={max(1, int(config.timeout))}",
-        f"{config.ssh_user}@{host}",
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    password = ssh_password_for(config)
+    if password is None:
+        auth = ["-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
+                "-o", "KbdInteractiveAuthentication=no"]
+        env = None
+        askpass_dir = None
+    else:
+        # Password via OpenSSH's SSH_ASKPASS (OpenSSH >= 8.4): a private helper prints the secret
+        # from its environment, so the password never appears in argv, files or logs.
+        askpass_dir, helper = _make_askpass_helper()
+        auth = ["-o", "BatchMode=no", "-o", "PreferredAuthentications=password",
+                "-o", "PubkeyAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+                "-o", "NumberOfPasswordPrompts=1"]
+        env = {**os.environ, "SSH_ASKPASS": helper, "SSH_ASKPASS_REQUIRE": "force",
+               "DISPLAY": os.environ.get("DISPLAY", "none"), "RP_ASKPASS_SECRET": password}
     try:
-        if process.stdout is None:
-            raise RuntimeError("SSH stdout pipe unavailable")
-        async with asyncio.timeout(config.timeout + 1):
-            output = bytearray()
-            while chunk := await process.stdout.read(4096):
-                output.extend(chunk)
-                if len(output) > MAX_RESPONSE:
-                    raise ValueError("SSH response exceeds 65536 bytes")
-            code = await process.wait()
-        return {
-            "available": code == 0,
-            "exit_code": code,
-            "text": output.decode("utf-8", errors="replace").replace("\x00", "").strip(),
-        }
-    finally:
-        if process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+        process = await asyncio.create_subprocess_exec(
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-T",
+            "-n",
+            "-p",
+            str(config.ssh_port),
+            *auth,
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "PermitLocalCommand=no",
+            "-o",
+            f"ConnectTimeout={max(1, int(config.timeout))}",
+            f"{config.ssh_user}@{host}",
+            command,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            if process.stdout is None:
+                raise RuntimeError("SSH stdout pipe unavailable")
+            async with asyncio.timeout(config.timeout + 1):
+                output = bytearray()
+                while chunk := await process.stdout.read(4096):
+                    output.extend(chunk)
+                    if len(output) > MAX_RESPONSE:
+                        raise ValueError("SSH response exceeds 65536 bytes")
+                code = await process.wait()
+            return {
+                "available": code == 0,
+                "exit_code": code,
+                "text": output.decode("utf-8", errors="replace").replace("\x00", "").strip(),
+            }
+        finally:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
 
+    finally:
+        if askpass_dir is not None:
+            shutil.rmtree(askpass_dir, ignore_errors=True)
 
 async def read_system(config: Settings) -> dict[str, Any]:
     if config.mode != "live" or not config.ssh_user:

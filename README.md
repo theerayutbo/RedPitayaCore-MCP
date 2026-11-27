@@ -327,3 +327,17 @@ See [validation evidence and precise limits](docs/VALIDATION.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+## Optional SSH authentication modes
+
+Read-only SSH diagnostics (`rp_system_diagnostics`, `rp_board_health`) need `RP_SSH_USER`.
+
+| Variable | Meaning |
+|---|---|
+| `RP_SSH_AUTH=key` (default) | Key authentication with `BatchMode=yes`. No password prompts. |
+| `RP_SSH_AUTH=password` + `RP_SSH_PASSWORD=...` | Opt-in password authentication through OpenSSH `SSH_ASKPASS` (OpenSSH ≥ 8.4). The password never appears in argv, files or logs. |
+| `RP_SSH_AUTH=password` + `RP_SSH_USE_FACTORY_DEFAULT=true` | Uses the Red Pitaya OS factory login (`root`/`root`) for boards that were never changed. Prefer keys, or change the password, on any network you do not control. |
+
+Host keys are still checked strictly (`StrictHostKeyChecking=yes`). Add each board to `known_hosts` once.
+Only the fixed, read-only commands in `SSH_COMMANDS` can run, in every mode.
