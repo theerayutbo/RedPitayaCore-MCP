@@ -80,9 +80,10 @@ def build_server(config: Settings) -> FastMCP[Any]:
         return await service.system_diagnostics()
 
     @mcp.tool(annotations=read_only)
-    async def rp_board_health() -> dict[str, Any]:
-        """Read die temperature, supply rails, uptime, load and eth0 counters (read-only SSH)."""
-        return await service.board_health()
+    async def rp_board_health(include_calibration: bool = False) -> dict[str, Any]:
+        """Read die temperature, supply rails, uptime, load and eth0 counters (read-only SSH);
+        optionally the EEPROM calibration via `calib -rv` (read mode only)."""
+        return await service.board_health(include_calibration)
 
     @mcp.tool(annotations=read_only)
     async def rp_connection_probe() -> dict[str, Any]:
