@@ -31,6 +31,7 @@ from .transport import (
     read_board_health,
     read_system,
 )
+from .waveforms import REPETITIONS_MAX, WAVEFORMS, BurstStream, waveform_spec
 
 TARGET = {
     "board": "STEMlab 125-14",
@@ -85,6 +86,7 @@ class Service:
             "tx_max_amplitude": self.config.tx_max_amplitude,
             "tx_max_seconds": self.config.tx_max_seconds,
             "tx_lead_s": self.config.tx_lead_s,
+            "tx_waveforms": sorted(WAVEFORMS),
             "channel_port": self.config.port,
             "rx_sample_order": self.config.rx_sample_order,
             "live_lifecycle_enabled": False,
@@ -366,6 +368,131 @@ class Service:
             else:
                 self.mock_tx_ends = asyncio.get_running_loop().time() + actual_s
             return {**self.tx_status(), "side_effects": TX_SIDE_EFFECTS}
+
+    def _tx_waveform_plan(
+        self,
+        waveform: str,
+        frequency_hz: int,
+        sample_rate: int,
+        amplitude: float,
+        burst_index: int,
+        n_payload: int,
+        repetitions: int,
+        gap_s: float,
+    ) -> tuple[BurstStream, dict[str, Any]]:
+        """Validate a built-in waveform burst against every operator limit and build it."""
+        spec = waveform_spec(waveform)
+        tx_frequency(frequency_hz)
+        tx_rate(sample_rate)
+        config = self.config
+        if any(
+            type(value) not in {int, float} or not math.isfinite(value)
+            for value in (amplitude, gap_s)
+        ):
+            raise ValueError("Amplitude and gap must be finite numbers")
+        if not 0 < amplitude <= config.tx_max_amplitude:
+            raise ValueError(f"Amplitude must be above 0 and at most {config.tx_max_amplitude}")
+        if not 0 <= gap_s <= config.tx_max_seconds:
+            raise ValueError(f"Gap must be from 0 to {config.tx_max_seconds} s")
+        if type(repetitions) is not int or not 1 <= repetitions <= REPETITIONS_MAX:
+            raise ValueError(f"repetitions must be an integer from 1 to {REPETITIONS_MAX}")
+        # The board's RF spans the carrier plus or minus the nominal occupied half-bandwidth.
+        half_bandwidth = spec.half_bandwidth_fraction * sample_rate
+        low, high = config.tx_min_hz, config.tx_max_hz
+        edges = frequency_hz - half_bandwidth, frequency_hz + half_bandwidth
+        if config.mode == "live" or low is not None:
+            if low is None or high is None or edges[0] < low or edges[1] > high:
+                raise PermissionError(f"TX frequency is outside the operator band {low}-{high} Hz")
+        burst = spec.generate(amplitude, burst_index, n_payload)
+        gap = round(gap_s * sample_rate)
+        stream = BurstStream(burst.samples, sample_rate, repetitions, gap)
+        # Count every streamed sample, gaps and the zero padding to whole blocks included, so the
+        # limit holds for what is really sent.
+        duration_s = stream.blocks * TX_BLOCK_SAMPLES / sample_rate
+        if duration_s > config.tx_max_seconds:
+            raise ValueError(
+                f"Airtime {duration_s:.6f} s, gaps and padding to whole blocks included, "
+                f"exceeds the limit of {config.tx_max_seconds} s"
+            )
+        details = {
+            "name": spec.name,
+            "description": spec.description,
+            **burst.details,
+            "sample_rate": sample_rate,
+            "symbol_rate_hz": sample_rate / spec.samples_per_symbol,
+            "occupied_band_hz": [edges[0], edges[1]],
+            "burst_s": len(burst.samples) / sample_rate,
+            "repetitions": repetitions,
+            "gap_samples": gap,
+            "gap_s": gap / sample_rate,
+            "active_samples": stream.active_samples,
+            "active_s": stream.active_samples / sample_rate,
+            "blocks": stream.blocks,
+            "padding_samples": stream.padding_samples,
+            "stream_samples": stream.blocks * TX_BLOCK_SAMPLES,
+            "duration_s": duration_s,
+            "edges": "none added: the waveform is sent exactly; a stop before the end sends "
+            "one last block with a falling edge",
+        }
+        return stream, details
+
+    async def tx_waveform(
+        self,
+        waveform: str,
+        frequency_hz: int,
+        sample_rate: int,
+        amplitude: float,
+        burst_index: int,
+        n_payload: int,
+        repetitions: int,
+        gap_s: float,
+        key_ptt: bool,
+        acknowledge_rf_output: bool,
+    ) -> dict[str, Any]:
+        """Send repeated bursts of one built-in waveform, under the same gates as tx_start."""
+        if self.config.mode == "live":
+            if not self.config.allow_tx:
+                raise PermissionError("TX disabled; operator must set RP_ALLOW_TX=true")
+            if acknowledge_rf_output is not True:
+                raise PermissionError("Set acknowledge_rf_output=true after checking the OUT load")
+        stream, details = self._tx_waveform_plan(
+            waveform,
+            frequency_hz,
+            sample_rate,
+            amplitude,
+            burst_index,
+            n_payload,
+            repetitions,
+            gap_s,
+        )
+        async with self.tx_lock:
+            if self._tx_active():
+                raise ValueError("TX burst already running; stop it first")
+            if self.config.mode == "mock" and not self.mock_running:
+                raise ConnectionError("Mock app stopped; simulate app start first")
+            self.tx_requested = {
+                "waveform": details["name"],
+                "frequency_hz": frequency_hz,
+                "sample_rate": sample_rate,
+                "amplitude": amplitude,
+                "burst_index": burst_index,
+                "n_payload": n_payload,
+                "repetitions": repetitions,
+                "gap_s": details["gap_s"],
+                "duration_s": details["duration_s"],
+                "key_ptt": key_ptt,
+                "baseband_sha256": details["baseband_sha256"],
+            }
+            if self.config.mode == "live":
+                try:
+                    await self.tx.start_stream(frequency_hz, sample_rate, stream, key_ptt)
+                except (OSError, TimeoutError) as error:
+                    raise ConnectionError(
+                        "TX connection failed; check network, app and role ownership"
+                    ) from error
+            else:
+                self.mock_tx_ends = asyncio.get_running_loop().time() + details["duration_s"]
+            return {**self.tx_status(), "waveform": details, "side_effects": TX_SIDE_EFFECTS}
 
     def tx_status(self) -> dict[str, Any]:
         live = self.config.mode == "live"

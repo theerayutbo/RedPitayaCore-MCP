@@ -11,7 +11,7 @@ import re
 import shutil
 import socket
 import tempfile
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import numpy as np
@@ -421,6 +421,42 @@ class RxConnection:
         await asyncio.gather(*(_wait_writer_closed(writer) for writer in writers))
 
 
+class BlockSource(Protocol):
+    """Whole TX blocks of a bounded burst: `blocks` of them, each exactly 16384 bytes."""
+
+    @property
+    def blocks(self) -> int: ...
+
+    def block(self, index: int) -> bytes:
+        """Block `index` as sent in a burst that runs to the end."""
+        ...
+
+    def falling(self, index: int) -> bytes:
+        """Block `index` ending on a falling edge, sent last when a stop cuts the burst short."""
+        ...
+
+
+class ToneBlocks:
+    """One repeated tone block, with raised-cosine edges on the first and last blocks."""
+
+    def __init__(self, block: bytes, blocks: int, sample_rate: int):
+        self.blocks = blocks
+        self._block = block
+        self._rising, self._falling, self._single = ramp_blocks(block, sample_rate)
+
+    def block(self, index: int) -> bytes:
+        if self.blocks == 1:
+            return self._single
+        if index == 0:
+            return self._rising
+        if index == self.blocks - 1:
+            return self._falling
+        return self._block
+
+    def falling(self, index: int) -> bytes:
+        return self._falling
+
+
 class TxBurst:
     """One bounded, self-ending burst. Nothing here can transmit without an end time.
 
@@ -448,15 +484,45 @@ class TxBurst:
     async def start(
         self, frequency_hz: int, sample_rate: int, block: bytes, blocks: int, key_ptt: bool
     ) -> None:
+        """Send one tone block `blocks` times, with ramped first and last blocks."""
         if not self.config.allow_tx:
             raise PermissionError("TX is disabled; operator must set RP_ALLOW_TX=true")
-        words = tx_frequency(frequency_hz) + tx_rate(sample_rate)
+        tx_frequency(frequency_hz)
+        tx_rate(sample_rate)
         if len(block) != TX_BLOCK_SAMPLES * 8:
             raise ValueError("TX blocks must hold exactly 2048 samples")
         if type(blocks) is not int or blocks < 1:
             raise ValueError("A burst needs at least one whole block")
         if self.active:
             raise ValueError("TX burst already running; stop it first")
+        await self._start(
+            frequency_hz, sample_rate, ToneBlocks(block, blocks, sample_rate), key_ptt
+        )
+
+    async def start_stream(
+        self, frequency_hz: int, sample_rate: int, source: BlockSource, key_ptt: bool
+    ) -> None:
+        """Send a fixed sequence of whole blocks, such as a built-in waveform, exactly once."""
+        if not self.config.allow_tx:
+            raise PermissionError("TX is disabled; operator must set RP_ALLOW_TX=true")
+        tx_frequency(frequency_hz)
+        tx_rate(sample_rate)
+        blocks = source.blocks
+        if type(blocks) is not int or blocks < 1:
+            raise ValueError("A burst needs at least one whole block")
+        # The service checks this too; the transport refuses on its own as well.
+        if blocks * TX_BLOCK_SAMPLES / sample_rate > self.config.tx_max_seconds:
+            raise ValueError(f"A burst must last at most {self.config.tx_max_seconds} s")
+        if any(len(source.block(index)) != TX_BLOCK_SAMPLES * 8 for index in {0, blocks - 1}):
+            raise ValueError("TX blocks must hold exactly 2048 samples")
+        if self.active:
+            raise ValueError("TX burst already running; stop it first")
+        await self._start(frequency_hz, sample_rate, source, key_ptt)
+
+    async def _start(
+        self, frequency_hz: int, sample_rate: int, source: BlockSource, key_ptt: bool
+    ) -> None:
+        words = tx_frequency(frequency_hz) + tx_rate(sample_rate)
         self.starting = True
         self.blocks_sent = 0
         self.outcome = "starting"
@@ -496,7 +562,7 @@ class TxBurst:
         self.stop_requested = asyncio.Event()
         self.outcome = "running"
         self.task = asyncio.create_task(
-            self._feed(control, control_reader, data, block, sample_rate, blocks),
+            self._feed(control, control_reader, data, source, sample_rate),
             name="rp-tx-burst",
         )
         self.starting = False
@@ -535,19 +601,18 @@ class TxBurst:
         control: asyncio.StreamWriter,
         control_reader: asyncio.StreamReader,
         data: asyncio.StreamWriter,
-        block: bytes,
+        source: BlockSource,
         sample_rate: int,
-        blocks: int,
     ) -> None:
         loop = asyncio.get_running_loop()
+        blocks = source.blocks
         block_s = TX_BLOCK_SAMPLES / sample_rate
         fifo_s = TX_FIFO_SAMPLES / sample_rate
         # Up to the FIFO's worth of what has been sent sits on the board, not in the socket, and
         # the server needs a whole block in the socket for each read. So RP_TX_LEAD_S is the
         # stall the socket can ride out, on top of those.
         lead_s = max(TX_MIN_LEAD_BLOCKS * block_s, self.config.tx_lead_s + fifo_s + block_s)
-        rising, falling, single = ramp_blocks(block, sample_rate)
-        silence = bytes(len(block))
+        silence = bytes(TX_BLOCK_SAMPLES * 8)
         # When the DAC runs out of what has been sent. A stall moves this later, so pacing and the
         # PTT tail both follow what the DAC can really have played.
         dac_end = loop.time() + TX_PREROLL_BLOCKS * block_s
@@ -555,6 +620,8 @@ class TxBurst:
 
         def queue(payload: bytes) -> None:
             nonlocal dac_end
+            if len(payload) != TX_BLOCK_SAMPLES * 8:
+                raise ValueError("TX blocks must hold exactly 2048 samples")
             data.write(payload)
             dac_end = max(loop.time(), dac_end) + block_s
 
@@ -578,27 +645,21 @@ class TxBurst:
                                     self.stop_requested.wait(), max(0.0005, ahead - lead_s)
                                 )
                             continue
-                        if blocks == 1:
-                            payload = single
-                        elif self.blocks_sent == 0:
-                            payload = rising
-                        elif self.blocks_sent == blocks - 1:
-                            payload = falling
-                        else:
-                            payload = block
-                        queue(payload)
+                        queue(source.block(self.blocks_sent))
                         await data.drain()
                         self.blocks_sent += 1
                     if self.stop_requested.is_set() and 0 < self.blocks_sent < blocks:
                         # Still within the burst's block budget, and ends without a hard edge.
-                        queue(falling)
+                        queue(source.falling(self.blocks_sent))
                         await data.drain()
                         self.blocks_sent += 1
                     outcome = "stopped" if self.stop_requested.is_set() else "completed"
                     for _ in range(TX_FLUSH_BLOCKS):
                         queue(silence)
                     await data.drain()
-            except (OSError, TimeoutError) as error:
+            except Exception as error:
+                # Any failure while feeding, including a bad block from the source, takes this
+                # path: drop what the host holds, then keep TX control until the queue has played.
                 outcome = f"failed: {type(error).__name__}"
                 if data.transport is not None:
                     data.transport.abort()
