@@ -87,6 +87,9 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
     env["RP_ALLOW_PROJECT_WRITE"] = "false"
     env["RP_ALLOW_LOCAL_BUILD"] = "false"
     env["RP_VIVADO_EXECUTABLE"] = ""
+    env["RP_ALLOW_TX"] = "false"
+    env["RP_TX_MIN_HZ"] = ""
+    env["RP_TX_MAX_HZ"] = ""
     parameters = StdioServerParameters(
         command=sys.executable, args=["-m", "redpitayacore_mcp"], env=env
     )
@@ -108,6 +111,7 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_rx_read",
                 "rp_rx_disconnect",
                 "rp_tx_start",
+                "rp_tx_waveform",
                 "rp_tx_status",
                 "rp_tx_stop",
                 "rp_fpga_capabilities",
@@ -144,6 +148,22 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
             assert bad_type.isError
             unknown = await session.call_tool("rp_tx_enable", {})
             assert unknown.isError
+            assert annotations["rp_tx_waveform"].readOnlyHint is False
+            burst = await session.call_tool(
+                "rp_tx_waveform",
+                {"waveform": "aura_qpsk_v1", "frequency_hz": 1_000_000, "amplitude": 0.01},
+            )
+            assert not burst.isError
+            assert burst.structuredContent["simulated"] is True
+            waveform = burst.structuredContent["waveform"]
+            assert waveform["baseband_sha256"] == (
+                "ee0342c5e5bb41c3730d4af384f21e76585cabe1be81ff0713695a08a7074f9e"
+            )
+            custom = await session.call_tool(
+                "rp_tx_waveform",
+                {"waveform": "custom", "frequency_hz": 1_000_000, "amplitude": 0.01},
+            )
+            assert custom.isError
             resources = await session.list_resources()
             assert any(
                 str(resource.uri) == "redpitaya://safety" for resource in resources.resources

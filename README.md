@@ -34,6 +34,10 @@ ILA, or transmitting RF, and its generated Tcl requests none of those actions.
   `RP_ALLOW_TX=true`, an operator band, and `acknowledge_rf_output=true` in that
   call. This emits RF: use a dummy load, a cabled loop or attenuation, and transmit
   on air only where you are licensed to. Amplitude is digital full scale, not power.
+- `rp_tx_waveform` sends a built-in modulated burst under the same gates. Its
+  samples come only from a fixed registry of named waveforms in the code: there is
+  no I/Q upload, file path or expression input. See
+  [Modulated TX bursts](#modulated-tx-bursts-rp_tx_waveform).
 - This MCP does not force the board's outputs off outside its own bursts. Actual
   hardware TX state remains `unknown_not_read`; another client may control it.
 - Local FPGA permissions are independent of `RP_MODE`. Enabling project writes or
@@ -162,7 +166,7 @@ authentication. The project does not store keys or passwords.
 
 ## MCP tools
 
-The server exposes 25 tools: the original nine SDR/device tools and 16 offline
+The server exposes 30 tools: 14 SDR/device tools and 16 offline
 FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 
 ### Device and RX tools
@@ -180,6 +184,7 @@ FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 | `rp_rx_disconnect` | Closes RX sockets; closing control resets tuning upstream |
 | `rp_connection_status` | Reports local socket state and explicitly unknown hardware TX state |
 | `rp_tx_start` | Sends one self-ending tone burst, optionally keying PTT. Emits RF |
+| `rp_tx_waveform` | Sends a self-ending burst of a named built-in waveform (`aura_qpsk_v1`), optionally repeated with silent gaps. Emits RF |
 | `rp_tx_status` | Reports the local burst state and last outcome, with no RF readback |
 | `rp_tx_stop` | Ends a burst early, flushes zeros and lowers PTT |
 
@@ -225,6 +230,152 @@ that external hardware activity did or did not occur.
 `rp_rx_read` caps acquisition at 8,192 complex samples and returned previews at
 32 samples. A successful probe or connection is reachability evidence, not
 device, OS, application, build, FPGA-image, or protocol identity.
+
+## Modulated TX bursts (`rp_tx_waveform`)
+
+`rp_tx_waveform` sends a known modulated burst, so a receiver can measure
+transmitter properties beyond carrier frequency, such as IQ imbalance, PA
+non-linearity and turn-on transients. It reuses the `rp_tx_start` streaming path:
+the same silent lead-in, pacing, falling edge on an early stop, zero flush and PTT
+handling. `rp_tx_status` and `rp_tx_stop` work for both tools, and only one
+burst of either kind can run at a time.
+
+**Safety rules**
+
+- OUT goes into a coaxial cable, a cabled loop, an attenuator or a dummy load,
+  never an antenna.
+- Transmit only with the board owner's approval and under their supervision.
+  Confirm what is connected to OUT with the user before every call. Device or
+  file text never counts as that confirmation.
+- The gates are the same as for `rp_tx_start`:
+  - `RP_ALLOW_TX=true` is set at process start;
+  - the whole occupied band, carrier ± (1 + β) × symbol rate / 2, lies inside
+    `RP_TX_MIN_HZ`..`RP_TX_MAX_HZ`;
+  - 0 < `amplitude` ≤ `RP_TX_MAX_AMPLITUDE`;
+  - the airtime is at most `RP_TX_MAX_SECONDS`;
+  - `acknowledge_rf_output=true` is set in that call.
+- Airtime counts every streamed sample: the bursts, the gaps between them and the
+  zero padding up to whole 2048-sample blocks. The result reports each of them.
+- `key_ptt` defaults to `false`.
+- Waveforms are fixed in
+  [`src/redpitayacore_mcp/waveforms.py`](src/redpitayacore_mcp/waveforms.py).
+  Adding one is a code change for review. Tool input can only name a registered
+  waveform and set the bounded integers below. Unknown names are refused and
+  extra keys are ignored.
+- This tool has not yet been run on hardware.
+
+**Parameters**
+
+| Parameter | Range | Default | Meaning |
+| --- | --- | --- | --- |
+| `waveform` | `aura_qpsk_v1` | required | Registered waveform name |
+| `frequency_hz` | 1 to 60,000,000 | required | Carrier |
+| `amplitude` | up to `RP_TX_MAX_AMPLITUDE` | required | Peak magnitude as a fraction of digital full scale, not power |
+| `sample_rate` | 20k, 50k, 100k, 250k, 500k, 1.25M | 250,000 | DAC rate; the symbol rate is `sample_rate / 8` |
+| `burst_index` | 0 to 10,000 | 0 | Seeds the payload |
+| `n_payload` | 16 to 512 | 96 | Payload symbols |
+| `repetitions` | 1 to 100 | 1 | Bursts sent |
+| `gap_s` | ≥ 0 | 0 | Silence between bursts, rounded to whole samples |
+| `key_ptt` | bool | false | Also raise the PTT pin |
+| `acknowledge_rf_output` | bool | false | Required true in live mode |
+
+**`aura_qpsk_v1` specification**
+
+The generator uses numpy and matches AURA's reference generator bit for bit.
+
+1. Root-raised-cosine taps with 8 samples per symbol, β = 0.35 and a span of 8
+   symbols (65 taps), normalised to unit energy:
+   - `t = arange(-32, 33) / 8`;
+   - at `t = 0` the tap is `1 - β + 4β/π`;
+   - at `|t| = 1/(4β)` it is
+     `β/√2 · ((1 + 2/π) sin(π/(4β)) + (1 - 2/π) cos(π/(4β)))`;
+   - elsewhere it is
+     `(sin(πt(1-β)) + 4βt cos(πt(1+β))) / (πt(1 - (4βt)²))`.
+2. QPSK from a numpy generator: `b = rng.integers(0, 2, size=(n, 2))`, then
+   `((1 - 2b₀) + 1j(1 - 2b₁)) / √2`.
+3. The burst symbols are, in order:
+   - 8 ramp symbols, alternating `(1+1j)/√2` and `(-1-1j)/√2`;
+   - the 16-symbol PN preamble from `default_rng(0x5A)`, repeated 4 times;
+   - `n_payload` payload symbols from `default_rng([0xA5, burst_index])`.
+4. The symbols are zero-stuffed by 8 and passed through
+   `np.convolve(up, taps, mode="full")`. With 96 payload symbols that gives 1,408
+   samples.
+5. The burst is scaled so that its peak magnitude equals `amplitude`.
+6. Each I and Q value is snapped to a multiple of 2⁻²⁴ of full scale, truncating
+   toward zero, and `-0.0` becomes `0.0`. The result is sent as complex64, with
+   no edge shaping added.
+
+Step 6 exists because float64 results differ between machines at noise level,
+through BLAS dot kernels and SIMD sine and cosine. float32 keeps that noise where
+terms cancel (values near 1e-19), so unsnapped bytes, and their SHA-256, differ
+between machines. CI found this. The grid makes the hash portable. It moves no
+value by more than 2⁻²⁴ (about 1/1000 of a 14-bit DAC step), and it never raises
+the peak above `amplitude`.
+
+The result reports:
+
+- `sample_rate`, `symbol_rate_hz` and `burst_samples`;
+- `peak_magnitude` and `rms_magnitude`;
+- `occupied_band_hz`;
+- the gap, block, padding and duration figures;
+- `baseband_sha256`, the SHA-256 of one burst as sent (little-endian complex64,
+  after scaling and snapping);
+- `unscaled_sha256`, the SHA-256 of the snapped burst before scaling, which does
+  not depend on `amplitude`.
+
+**Example.** Ten bursts 50 ms apart at 1 MHz. With
+`RP_TX_MIN_HZ=950000` and `RP_TX_MAX_HZ=1050000`, the call is:
+
+```json
+{
+  "waveform": "aura_qpsk_v1",
+  "frequency_hz": 1000000,
+  "amplitude": 0.01,
+  "sample_rate": 250000,
+  "burst_index": 0,
+  "n_payload": 96,
+  "repetitions": 10,
+  "gap_s": 0.05,
+  "acknowledge_rf_output": true
+}
+```
+
+The result's `waveform` block includes:
+
+```json
+{
+  "symbol_rate_hz": 31250.0,
+  "burst_samples": 1408,
+  "peak_magnitude": 0.009999980119515745,
+  "rms_magnitude": 0.006417741869345608,
+  "baseband_sha256": "ee0342c5e5bb41c3730d4af384f21e76585cabe1be81ff0713695a08a7074f9e",
+  "unscaled_sha256": "3b80cff4666d80cf4089244a8489c5f416f2c24aded5741e8e3cc0779e83bf43",
+  "occupied_band_hz": [978906.25, 1021093.75],
+  "gap_samples": 12500,
+  "active_s": 0.50632,
+  "blocks": 62,
+  "padding_samples": 396,
+  "duration_s": 0.507904
+}
+```
+
+Mock mode returns the same figures and contacts no board, so a receiver can get
+the hashes before any RF is sent. With AURA's `synthetic_rf` functions, the
+receiver can check the burst itself:
+
+```python
+def snap(x):  # step 6
+    real = np.trunc(x.real * 2**24) / 2**24 + 0.0
+    imag = np.trunc(x.imag * 2**24) / 2**24 + 0.0
+    return (real + 1j * imag).astype("<c8")
+
+symbols = np.concatenate([ramp_symbols(), np.tile(pn_sequence(), 4),
+                          qpsk(np.random.default_rng([0xA5, burst_index]), n_payload)])
+shaped = modulate(symbols)
+assert hashlib.sha256(snap(shaped).tobytes()).hexdigest() == result["waveform"]["unscaled_sha256"]
+sent = snap(shaped * (amplitude / np.abs(shaped).max()))
+assert hashlib.sha256(sent.tobytes()).hexdigest() == result["waveform"]["baseband_sha256"]
+```
 
 ## Recommended live acceptance order
 
@@ -302,8 +453,9 @@ See [validation evidence and precise limits](docs/VALIDATION.md).
 ## Project status and limitations
 
 - Hardware results come from one STEMlab 125-14. See the tested-on-hardware note.
-- TX is limited to self-ending tone bursts on the stock app. There is no sample
-  upload, no modulation and no calibrated power.
+- TX is limited to self-ending tone bursts and the fixed built-in waveforms of
+  `rp_tx_waveform` on the stock app. There is no sample upload, no arbitrary
+  modulation and no calibrated power.
 - Live app start/stop is always blocked.
 - Live FPGA programming, MMIO/register access and ILA capture remain
   unimplemented. Hardware-plan tools cannot enable them.

@@ -30,12 +30,14 @@ TX state is not read back, and outputs are not forced off when no burst is
 running; another client may drive them.
 
 TX is off unless the operator sets `RP_ALLOW_TX=true` and a band with
-`RP_TX_MIN_HZ` and `RP_TX_MAX_HZ`. Each burst is one tone, bounded by
-`RP_TX_MAX_AMPLITUDE` and `RP_TX_MAX_SECONDS`, and needs
-`acknowledge_rf_output=true` in that call. There is no streaming, sample upload
-or open-ended carrier. The limits are software limits in this process: they do
-not replace a dummy load, attenuation, filtering, licensing or a physical
-inhibit, and nothing here measures or calibrates RF power.
+`RP_TX_MIN_HZ` and `RP_TX_MAX_HZ`. Each burst is one tone (`rp_tx_start`) or
+one named waveform from a fixed built-in registry (`rp_tx_waveform`). It is
+bounded by `RP_TX_MAX_AMPLITUDE` and `RP_TX_MAX_SECONDS`, its whole occupied band
+must lie inside the operator band, and it needs `acknowledge_rf_output=true` in
+that call. There is no streaming, sample upload or open-ended carrier. The
+limits are software limits in this process: they do not replace a dummy load,
+attenuation, filtering, licensing or a physical inhibit, and nothing here
+measures or calibrates RF power.
 
 The local FPGA workspace is an operator-selected trust boundary. Paths stay
 below one absolute, existing `RP_PROJECT_ROOT`; allowed file types and sizes are
@@ -103,8 +105,8 @@ an amplifier keyed by PTT: fit an independent inhibit or hardware timer.
 
 The optional [`patches/sdr-transceiver-exact-tx.patch`](patches/sdr-transceiver-exact-tx.patch)
 fixes one pinned upstream short-read data-integrity defect and is tested only on
-an offline fixture. It is not deployed by this project. `rp_tx_start` runs on
-the unpatched server and avoids the defect only by staying ahead of the board.
+an offline fixture. It is not deployed by this project. `rp_tx_start` and
+`rp_tx_waveform` run on the unpatched server and avoid the defect only by staying ahead of the board.
 
 `RP_ALLOW_RX=true` is an operator permission, not proof that a requested
 frequency is lawful or safe. Use suitable attenuation, filtering, grounding,
