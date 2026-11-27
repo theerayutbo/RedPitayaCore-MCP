@@ -300,8 +300,17 @@ The generator uses numpy and matches AURA's reference generator bit for bit.
 4. The symbols are zero-stuffed by 8 and passed through
    `np.convolve(up, taps, mode="full")`. With 96 payload symbols that gives 1,408
    samples.
-5. The burst is scaled so that its peak magnitude equals `amplitude`, then sent as
-   complex64. No edge shaping is added.
+5. The burst is scaled so that its peak magnitude equals `amplitude`.
+6. Each I and Q value is snapped to a multiple of 2⁻²⁴ of full scale, truncating
+   toward zero, and `-0.0` becomes `0.0`. The result is sent as complex64, with
+   no edge shaping added.
+
+Step 6 exists because float64 results differ between machines at noise level,
+through BLAS dot kernels and SIMD sine and cosine. float32 keeps that noise where
+terms cancel (values near 1e-19), so unsnapped bytes, and their SHA-256, differ
+between machines. CI found this. The grid makes the hash portable. It moves no
+value by more than 2⁻²⁴ (about 1/1000 of a 14-bit DAC step), and it never raises
+the peak above `amplitude`.
 
 The result reports:
 
@@ -310,9 +319,9 @@ The result reports:
 - `occupied_band_hz`;
 - the gap, block, padding and duration figures;
 - `baseband_sha256`, the SHA-256 of one burst as sent (little-endian complex64,
-  after scaling);
-- `unscaled_sha256`, the same before scaling, which does not depend on
-  `amplitude`.
+  after scaling and snapping);
+- `unscaled_sha256`, the SHA-256 of the snapped burst before scaling, which does
+  not depend on `amplitude`.
 
 **Example.** Ten bursts 50 ms apart at 1 MHz. With
 `RP_TX_MIN_HZ=950000` and `RP_TX_MAX_HZ=1050000`, the call is:
@@ -337,10 +346,10 @@ The result's `waveform` block includes:
 {
   "symbol_rate_hz": 31250.0,
   "burst_samples": 1408,
-  "peak_magnitude": 0.010000000006704785,
-  "rms_magnitude": 0.00641777825353134,
-  "baseband_sha256": "bcb66de6597edeb952d2cfd5517de2db51da1a75d8e9d2db237ff540c7acd3ee",
-  "unscaled_sha256": "1a28a251ad4d7d88cc279a82cbcceeefa5bbaf0ed1705ba80ce9bac004e17edb",
+  "peak_magnitude": 0.009999980119515745,
+  "rms_magnitude": 0.006417741869345608,
+  "baseband_sha256": "ee0342c5e5bb41c3730d4af384f21e76585cabe1be81ff0713695a08a7074f9e",
+  "unscaled_sha256": "3b80cff4666d80cf4089244a8489c5f416f2c24aded5741e8e3cc0779e83bf43",
   "occupied_band_hz": [978906.25, 1021093.75],
   "gap_samples": 12500,
   "active_s": 0.50632,
@@ -355,10 +364,17 @@ the hashes before any RF is sent. With AURA's `synthetic_rf` functions, the
 receiver can check the burst itself:
 
 ```python
+def snap(x):  # step 6
+    real = np.trunc(x.real * 2**24) / 2**24 + 0.0
+    imag = np.trunc(x.imag * 2**24) / 2**24 + 0.0
+    return (real + 1j * imag).astype("<c8")
+
 symbols = np.concatenate([ramp_symbols(), np.tile(pn_sequence(), 4),
                           qpsk(np.random.default_rng([0xA5, burst_index]), n_payload)])
-digest = hashlib.sha256(modulate(symbols).astype("<c8").tobytes()).hexdigest()
-assert digest == result["waveform"]["unscaled_sha256"]
+shaped = modulate(symbols)
+assert hashlib.sha256(snap(shaped).tobytes()).hexdigest() == result["waveform"]["unscaled_sha256"]
+sent = snap(shaped * (amplitude / np.abs(shaped).max()))
+assert hashlib.sha256(sent.tobytes()).hexdigest() == result["waveform"]["baseband_sha256"]
 ```
 
 ## Recommended live acceptance order

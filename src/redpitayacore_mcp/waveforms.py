@@ -19,7 +19,8 @@ import numpy.typing as npt
 
 from .protocol import TX_BLOCK_SAMPLES, ramp_blocks
 
-# aura_qpsk_v1, matching AURA's reference (src/aura/acquisition/synthetic_rf.py) bit for bit.
+# aura_qpsk_v1. Symbols and modulate() match AURA's reference (src/aura/acquisition/synthetic_rf.py)
+# bit for bit in float64; the sent samples are that output, peak-scaled and snapped to the grid.
 QPSK_SPS = 8
 QPSK_RRC_BETA = 0.35
 QPSK_RRC_SPAN = 8  # symbols
@@ -28,6 +29,12 @@ QPSK_PN_SYMBOLS = 16
 QPSK_PN_REPETITIONS = 4
 QPSK_RAMP_SYMBOLS = 8
 QPSK_PAYLOAD_SEED = 0xA5
+
+# Sent samples are snapped to multiples of 2**-24 of full scale, truncating toward zero. Float64
+# results differ between machines (BLAS dot kernels, SIMD sin/cos) at noise level, and float32 keeps
+# that noise where terms cancel (values near 1e-19), so unsnapped bytes and their SHA-256 differ
+# between machines. The grid is about 1/1000 of one 14-bit DAC step.
+SAMPLE_GRID = 2.0**-24
 
 BURST_INDEX_MAX = 10_000
 N_PAYLOAD_MIN, N_PAYLOAD_MAX = 16, 512
@@ -109,6 +116,21 @@ def modulate(symbols: Complex) -> Complex:
     return cast(Complex, np.convolve(up, _rrc_taps(), mode="full"))
 
 
+def snap_to_grid(values: Complex) -> npt.NDArray[np.complex64]:
+    """Snap to multiples of SAMPLE_GRID, truncating toward zero, so magnitudes never grow.
+
+    Adding 0.0 turns -0.0 into 0.0, so the bytes do not depend on the sign of a zero either.
+    Every grid value within full scale is exact in float32.
+    """
+    if not np.all(np.isfinite(values)) or np.max(np.abs(values), initial=0.0) > 1:
+        raise ValueError("Samples must be finite and within full scale")
+    real = np.trunc(values.real / SAMPLE_GRID) * SAMPLE_GRID + 0.0
+    imag = np.trunc(values.imag / SAMPLE_GRID) * SAMPLE_GRID + 0.0
+    snapped = np.empty(len(values), dtype=np.complex64)
+    snapped.real, snapped.imag = real, imag
+    return snapped
+
+
 def sha256_complex64(samples: npt.NDArray[np.complex64]) -> str:
     """SHA-256 of little-endian complex64 (float32 I, float32 Q), the bytes the DAC is sent."""
     return hashlib.sha256(samples.astype("<c8").tobytes()).hexdigest()
@@ -138,7 +160,7 @@ def _aura_qpsk_v1(amplitude: float, burst_index: int, n_payload: int) -> Wavefor
     symbols = burst_symbols(burst_index, n_payload)
     shaped = modulate(symbols)
     peak = float(np.max(np.abs(shaped)))
-    samples = (shaped * (amplitude / peak)).astype(np.complex64)
+    samples = snap_to_grid(shaped * (amplitude / peak))
     samples.setflags(write=False)
     sent = samples.astype(np.complex128)
     return Waveform(
@@ -163,11 +185,12 @@ def _aura_qpsk_v1(amplitude: float, burst_index: int, n_payload: int) -> Wavefor
             "burst_samples": len(samples),
             "peak_magnitude": float(np.max(np.abs(sent))),
             "rms_magnitude": math.sqrt(float(np.mean(sent.real**2 + sent.imag**2))),
+            "sample_grid": "multiples of 2**-24 of full scale, truncated toward zero, -0.0 as 0.0",
             "baseband_sha256": sha256_complex64(samples),
-            "unscaled_sha256": sha256_complex64(shaped.astype(np.complex64)),
-            "sha256_format": "little-endian complex64 (float32 I, float32 Q) of one burst; "
-            "baseband_sha256 is after peak scaling (what is sent), unscaled_sha256 is the "
-            "RRC-filtered symbols before scaling",
+            "unscaled_sha256": sha256_complex64(snap_to_grid(shaped)),
+            "sha256_format": "little-endian complex64 (float32 I, float32 Q) of one burst on the "
+            "sample grid; baseband_sha256 is after peak scaling (what is sent), unscaled_sha256 "
+            "is the RRC-filtered symbols before scaling",
         },
     )
 

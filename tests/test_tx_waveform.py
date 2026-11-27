@@ -37,13 +37,15 @@ from redpitayacore_mcp.waveforms import (
     pn_symbols,
     ramp_symbols,
     rrc_taps,
+    snap_to_grid,
     waveform_spec,
 )
 
 # burst_index=0, n_payload=96, amplitude=0.01 (any sample rate: samples do not depend on it).
-SHA_0_96_001 = "bcb66de6597edeb952d2cfd5517de2db51da1a75d8e9d2db237ff540c7acd3ee"
-# The same burst before peak scaling, as AURA's own modulate() gives it.
-UNSCALED_SHA_0_96 = "1a28a251ad4d7d88cc279a82cbcceeefa5bbaf0ed1705ba80ce9bac004e17edb"
+SHA_0_96_001 = "ee0342c5e5bb41c3730d4af384f21e76585cabe1be81ff0713695a08a7074f9e"
+# The same burst before peak scaling: AURA's own modulate() output, snapped to the grid.
+UNSCALED_SHA_0_96 = "3b80cff4666d80cf4089244a8489c5f416f2c24aded5741e8e3cc0779e83bf43"
+GRID = 2.0**-24
 
 GOOD = {
     "waveform": "aura_qpsk_v1",
@@ -103,15 +105,31 @@ def spec_qpsk(rng: np.random.Generator, n: int) -> np.ndarray:
     return ((1 - 2 * b[:, 0]) + 1j * (1 - 2 * b[:, 1])) / np.sqrt(2)
 
 
-def spec_burst(burst_index: int, n_payload: int, amplitude: float) -> np.ndarray:
+def spec_symbols(burst_index: int, n_payload: int) -> np.ndarray:
     pn = spec_qpsk(np.random.default_rng(0x5A), 16)
     ramp = np.array([(1 + 1j) / np.sqrt(2), (-1 - 1j) / np.sqrt(2)] * 4)
     payload = spec_qpsk(np.random.default_rng([0xA5, burst_index]), n_payload)
-    symbols = np.concatenate([ramp, np.tile(pn, 4), payload])
+    return np.concatenate([ramp, np.tile(pn, 4), payload])
+
+
+def spec_scaled(burst_index: int, n_payload: int, amplitude: float) -> np.ndarray:
+    """The float64 burst, as AURA's modulate() gives it, scaled to the peak."""
+    symbols = spec_symbols(burst_index, n_payload)
     up = np.zeros(len(symbols) * 8, dtype=complex)
     up[::8] = symbols
     shaped = np.convolve(up, spec_taps(), mode="full")
-    return (shaped * (amplitude / np.max(np.abs(shaped)))).astype(np.complex64)
+    return shaped * (amplitude / np.max(np.abs(shaped)))
+
+
+def spec_snap(values: np.ndarray) -> np.ndarray:
+    """Multiples of 2**-24, truncated toward zero, -0.0 as 0.0, as complex64."""
+    real = np.trunc(values.real * 2**24) / 2**24 + 0.0
+    imag = np.trunc(values.imag * 2**24) / 2**24 + 0.0
+    return (real + 1j * imag).astype(np.complex64)
+
+
+def spec_burst(burst_index: int, n_payload: int, amplitude: float) -> np.ndarray:
+    return spec_snap(spec_scaled(burst_index, n_payload, amplitude))
 
 
 def test_rrc_taps_follow_the_spec():
@@ -149,6 +167,52 @@ def test_waveform_matches_the_spec_bit_for_bit(burst_index, n_payload):
     assert wave.samples.dtype == np.complex64
     assert len(wave.samples) == (8 + 64 + n_payload) * 8 + 64
     assert wave.samples.tobytes() == expected.tobytes()
+    # The grid moves no sample by more than one step per component.
+    deviation = np.abs(wave.samples - spec_scaled(burst_index, n_payload, 0.05))
+    assert deviation.max() <= GRID * math.sqrt(2)
+
+
+def test_sha_does_not_depend_on_float64_noise():
+    """CI found machines whose BLAS and SIMD give float64 results a few ulp apart. Without the
+    grid, cancelled terms near 1e-19 survive in float32 and change the SHA-256. Simulate other
+    machines with another summation order and taps nudged by a few ulp."""
+    rng = np.random.default_rng(1)
+    symbols = burst_symbols(0, 96)
+    taps = rrc_taps()
+    up = np.zeros(len(symbols) * 8, dtype=complex)
+    up[::8] = symbols
+    variants = []
+    for order in (range(len(symbols)), reversed(range(len(symbols)))):
+        out = np.zeros(len(symbols) * 8 + 64, dtype=complex)
+        for m in order:
+            out[8 * m : 8 * m + 65] += symbols[m] * taps
+        variants.append(out)
+    for _ in range(8):
+        nudged = taps.copy()
+        for _ in range(int(rng.integers(1, 5))):
+            nudged = np.nextafter(nudged, np.where(rng.random(len(taps)) < 0.5, np.inf, -np.inf))
+        variants.append(np.convolve(up, nudged))
+    raw, snapped = set(), set()
+    for shaped in variants:
+        scaled = shaped * (0.01 / np.max(np.abs(shaped)))
+        raw.add(hashlib.sha256(scaled.astype("<c8").tobytes()).hexdigest())
+        snapped.add(hashlib.sha256(snap_to_grid(scaled).tobytes()).hexdigest())
+    assert len(raw) > 1  # the hazard is real
+    assert snapped == {SHA_0_96_001}
+
+
+def test_snap_to_grid_is_exact_never_grows_and_has_no_negative_zero():
+    values = np.array([1e-19 - 1e-19j, -1e-19 + 0j, 0.3 + 0.7j, -0.25 - 0.9j, 1 + 0j])
+    snapped = snap_to_grid(values)
+    assert snapped.dtype == np.complex64
+    parts = snapped.view(np.float32)
+    assert not np.signbit(parts[parts == 0]).any()
+    assert np.all((parts.astype(np.float64) / GRID) % 1 == 0)
+    assert np.all(np.abs(snapped.astype(np.complex128)) <= np.abs(values))
+    assert snapped[0] == 0 and snapped[4] == 1
+    for bad in ([1.5 + 0j], [0.8 + 0.8j], [complex(math.nan, 0)], [complex(math.inf, 0)]):
+        with pytest.raises(ValueError, match="full scale"):
+            snap_to_grid(np.array(bad))
 
 
 def test_expected_sha_for_fixed_parameters():
@@ -172,17 +236,21 @@ def test_waveform_is_deterministic_and_seeded_by_burst_index():
 
 
 @pytest.mark.parametrize("amplitude", [0.001, 0.01, 0.05, 0.1, 1.0])
-def test_peak_magnitude_equals_amplitude(amplitude):
-    wave = generate(amplitude)
+@pytest.mark.parametrize("burst_index", [0, 1, 9_999])
+def test_peak_magnitude_equals_amplitude(amplitude, burst_index):
+    wave = generate(amplitude, burst_index)
     magnitude = np.abs(wave.samples.astype(np.complex128))
-    assert magnitude.max() == pytest.approx(amplitude, rel=1e-6)
-    # float32 rounding is the only overshoot.
-    assert magnitude.max() <= amplitude * (1 + 1e-6)
-    assert wave.details["peak_magnitude"] == pytest.approx(magnitude.max(), rel=1e-12)
+    # Truncating toward zero on the grid never overshoots, and costs under 1.5 grid steps.
+    assert amplitude - 1.5 * GRID <= magnitude.max() <= amplitude
+    assert wave.details["peak_magnitude"] == magnitude.max()
     rms = math.sqrt(float(np.mean(magnitude**2)))
     assert wave.details["rms_magnitude"] == pytest.approx(rms, rel=1e-12)
     # The shape does not change with amplitude, so neither does the crest factor.
-    assert rms / amplitude == pytest.approx(0.641777825, rel=1e-6)
+    assert rms / amplitude == pytest.approx(
+        generate(1.0, burst_index).details["rms_magnitude"], rel=1e-3
+    )
+    if burst_index == 0:
+        assert rms / amplitude == pytest.approx(0.6417778, rel=1e-3)
 
 
 def test_matched_filter_recovers_the_symbols():

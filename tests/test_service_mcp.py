@@ -157,7 +157,7 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
             assert burst.structuredContent["simulated"] is True
             waveform = burst.structuredContent["waveform"]
             assert waveform["baseband_sha256"] == (
-                "bcb66de6597edeb952d2cfd5517de2db51da1a75d8e9d2db237ff540c7acd3ee"
+                "ee0342c5e5bb41c3730d4af384f21e76585cabe1be81ff0713695a08a7074f9e"
             )
             custom = await session.call_tool(
                 "rp_tx_waveform",
