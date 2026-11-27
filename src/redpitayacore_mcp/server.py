@@ -80,9 +80,9 @@ def build_server(config: Settings) -> FastMCP[Any]:
         return await service.system_diagnostics()
 
     @mcp.tool(annotations=read_only)
-    async def rp_board_temperature() -> dict[str, Any]:
-        """Read the Zynq die temperature (XADC) over the fixed read-only SSH command; no writes."""
-        return await service.board_temperature()
+    async def rp_board_health() -> dict[str, Any]:
+        """Read die temperature, supply rails, uptime, load and eth0 counters (read-only SSH)."""
+        return await service.board_health()
 
     @mcp.tool(annotations=read_only)
     async def rp_connection_probe() -> dict[str, Any]:

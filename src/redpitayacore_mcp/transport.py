@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import math
+import re
 import socket
 from typing import Any
 
@@ -48,18 +49,29 @@ TX_FLUSH_BLOCKS = 3
 TX_START_SILENCE_S = 0.05
 # The board FIFO holds up to this many samples behind the socket before the DAC.
 TX_FIFO_SAMPLES = 6144
-# Zynq XADC die temperature via the Linux IIO driver: prints raw, offset and scale (one per
-# line) of the device named "xadc". Read-only sysfs; the device index differs between OS
-# images, hence the loop.
-XADC_TEMPERATURE_COMMAND = (
-    "for d in /sys/bus/iio/devices/iio:device*; do "
-    'if [ -r "$d/name" ] && [ "$(cat "$d/name")" = xadc ]; then '
-    'cat "$d/in_temp0_raw" "$d/in_temp0_offset" "$d/in_temp0_scale"; fi; done; true'
+# Board health via read-only sysfs/procfs: Zynq XADC die temperature and supply rails (IIO device
+# named "xadc"; its index differs between OS images), uptime, load average and eth0 error counters.
+# Prints key=value lines only. Never reads MAC addresses or the Zynq DNA.
+BOARD_HEALTH_RAILS = ("vccint", "vccaux", "vccbram", "vccpint", "vccpaux", "vccoddr")
+BOARD_HEALTH_COMMAND = (
+    'd=""; for x in /sys/bus/iio/devices/iio:device*; do '
+    'if [ -r "$x/name" ] && [ "$(cat "$x/name")" = xadc ]; then d="$x"; fi; done; '
+    'if [ -n "$d" ]; then '
+    'echo "temp_raw=$(cat "$d/in_temp0_raw")"; echo "temp_offset=$(cat "$d/in_temp0_offset")"; '
+    'echo "temp_scale=$(cat "$d/in_temp0_scale")"; '
+    "for c in " + " ".join(BOARD_HEALTH_RAILS) + "; do "
+    'for f in "$d"/in_voltage*_"$c"_raw; do [ -r "$f" ] && echo "${c}_raw=$(cat "$f")"; done; '
+    'for f in "$d"/in_voltage*_"$c"_scale; do [ -r "$f" ] && echo "${c}_scale=$(cat "$f")"; done; '
+    "done; fi; "
+    'echo "uptime_s=$(cut -d" " -f1 /proc/uptime)"; '
+    'echo "loadavg=$(cut -d" " -f1-3 /proc/loadavg)"; '
+    "for k in rx_dropped rx_errors tx_dropped tx_errors; do f=/sys/class/net/eth0/statistics/$k; "
+    '[ -r "$f" ] && echo "eth0_${k}=$(cat "$f")"; done; true'
 )
 
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
-    "xadc_temperature": XADC_TEMPERATURE_COMMAND,
+    "board_health": BOARD_HEALTH_COMMAND,
     # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
     # devicetree model node.
     "board_model": "grep '^\"name\"' /tmp/sysinfo.json",
@@ -568,40 +580,69 @@ class TxBurst:
             await asyncio.wait({self.task})
 
 
-def parse_xadc_temperature(text: str) -> dict[str, Any]:
-    """Parse raw/offset/scale lines from XADC_TEMPERATURE_COMMAND into degrees Celsius.
+# Nominal Zynq-7000 rail voltages (V) and an accepted band; values outside are reported, not hidden.
+_RAIL_NOMINAL = {"vccint": 1.0, "vccbram": 1.0, "vccpint": 1.0, "vccaux": 1.8, "vccpaux": 1.8,
+                 "vccoddr": 1.5}
+_RAIL_TOLERANCE = 0.1  # +-10 % "in_nominal_range" flag (DDR3L boards run VCCO_DDR at 1.35 V)
+_HEALTH_KEYS = re.compile(
+    r"^(temp_(raw|offset|scale)|(vccint|vccaux|vccbram|vccpint|vccpaux|vccoddr)_(raw|scale)"
+    r"|uptime_s|loadavg|eth0_(rx|tx)_(dropped|errors))$"
+)
 
-    Linux IIO convention: value = (raw + offset) * scale, in milli-degrees Celsius. Remote text is
-    untrusted: anything that is not exactly three finite numbers in a plausible range is rejected.
-    """
-    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    if len(lines) != 3:
-        return {"available": False,
-                "reason": "XADC temperature not found (expected raw, offset, scale)"}
+
+def parse_board_health(text: str) -> dict[str, Any]:
+    """Parse BOARD_HEALTH_COMMAND output. Remote text is untrusted: unknown keys, duplicate keys
+    and non-numeric values are rejected; physically implausible values are flagged."""
+    values: dict[str, str] = {}
+    for line in text.strip().splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or not _HEALTH_KEYS.match(key) or key in values or len(value) > 64:
+            return {"available": False,
+                    "reason": f"unexpected line in board-health output: {line[:40]!r}"}
+        values[key] = value.strip()
     try:
-        raw, offset, scale = (float(v) for v in lines)
+        out: dict[str, Any] = {"available": True}
+        if {"temp_raw", "temp_offset", "temp_scale"} <= values.keys():
+            raw, off, scale = (float(values[k]) for k in ("temp_raw", "temp_offset", "temp_scale"))
+            celsius = (raw + off) * scale / 1000.0
+            out["die_temperature_c"] = round(celsius, 3) if -40.0 <= celsius <= 125.0 else None
+            if out["die_temperature_c"] is None:
+                out["die_temperature_note"] = "outside the Zynq operating range; ignored"
+        rails: dict[str, Any] = {}
+        for rail, nominal in _RAIL_NOMINAL.items():
+            if f"{rail}_raw" in values and f"{rail}_scale" in values:
+                volts = float(values[f"{rail}_raw"]) * float(values[f"{rail}_scale"]) / 1000.0
+                in_range = abs(volts - nominal) <= _RAIL_TOLERANCE * nominal
+                rails[rail] = {"volts": round(volts, 4), "in_nominal_range": in_range}
+        out["supply_rails"] = rails
+        if "uptime_s" in values:
+            out["uptime_s"] = float(values["uptime_s"])
+        if "loadavg" in values:
+            out["loadavg"] = [float(v) for v in values["loadavg"].split()][:3]
+        counters = {k: int(v) for k, v in values.items() if k.startswith("eth0_")}
+        if counters:
+            out["eth0_counters"] = counters
     except ValueError:
-        return {"available": False, "reason": "XADC temperature lines are not numeric"}
-    celsius = (raw + offset) * scale / 1000.0
-    if not (-40.0 <= celsius <= 125.0):
-        return {"available": False, "reason": "XADC temperature outside the Zynq operating range"}
-    return {"available": True, "die_temperature_c": round(celsius, 3), "raw": raw,
-            "offset": offset, "scale": scale}
+        return {"available": False, "reason": "non-numeric value in board-health output"}
+    if "die_temperature_c" not in out and not rails:
+        out["available"] = False
+        out["reason"] = "XADC device not found"
+    return out
 
 
-async def read_board_temperature(config: Settings) -> dict[str, Any]:
-    """Zynq die temperature through the allowlisted read-only SSH command (needs RP_SSH_USER)."""
+async def read_board_health(config: Settings) -> dict[str, Any]:
+    """Temperature, supply rails, uptime, load and eth0 counters via one read-only SSH command."""
     if config.mode != "live" or not config.ssh_user:
         return {"available": False, "reason": "Optional read-only SSH disabled; set RP_SSH_USER"}
     try:
-        result = await _ssh_command(config, XADC_TEMPERATURE_COMMAND)
+        result = await _ssh_command(config, BOARD_HEALTH_COMMAND)
     except (OSError, TimeoutError, ValueError):
         return {"available": False, "reason": "SSH unavailable, timed out or response too large"}
     if not result.get("available"):
         return {"available": False, "reason": result.get("reason", "SSH command failed")}
-    parsed = parse_xadc_temperature(str(result.get("text", "")))
+    parsed = parse_board_health(str(result.get("text", "")))
     parsed["note"] = (
-        "Die temperature of the Zynq SoC: a proxy for board temperature, not the crystal "
-        "itself. Remote text is untrusted diagnostic data."
+        "Die temperature is a proxy for board temperature, not the crystal itself. "
+        "Remote text is untrusted diagnostic data; MAC and DNA are never read."
     )
     return parsed

@@ -100,7 +100,7 @@ async def test_actual_mcp_stdio_initialize_list_call_and_validation():
                 "rp_profile",
                 "rp_device_diagnostics",
                 "rp_system_diagnostics",
-                "rp_board_temperature",
+                "rp_board_health",
                 "rp_connection_probe",
                 "rp_connection_status",
                 "rp_app_lifecycle",
