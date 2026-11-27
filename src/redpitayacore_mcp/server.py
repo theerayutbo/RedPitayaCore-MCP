@@ -80,6 +80,11 @@ def build_server(config: Settings) -> FastMCP[Any]:
         return await service.system_diagnostics()
 
     @mcp.tool(annotations=read_only)
+    async def rp_board_health() -> dict[str, Any]:
+        """Read die temperature, supply rails, uptime, load and eth0 counters (read-only SSH)."""
+        return await service.board_health()
+
+    @mcp.tool(annotations=read_only)
     async def rp_connection_probe() -> dict[str, Any]:
         """TCP connect/close with no selector. Briefly occupies server accept; no identity proof."""
         return await service.probe()

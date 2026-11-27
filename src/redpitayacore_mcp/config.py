@@ -7,7 +7,7 @@ import math
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -37,6 +37,10 @@ class Settings:
     allow_lifecycle: bool = False
     ssh_user: str | None = None
     ssh_port: int = 22
+    # "key" (default, BatchMode) or "password" (opt-in, via OpenSSH SSH_ASKPASS; never in argv).
+    ssh_auth: Literal["key", "password"] = "key"
+    ssh_password: str | None = field(default=None, repr=False)
+    ssh_use_factory_default: bool = False
     project_root: Path | None = None
     allow_project_write: bool = False
     allow_local_build: bool = False
@@ -54,6 +58,13 @@ class Settings:
             address = ipaddress.IPv4Address(self.host)
             if address.is_multicast or address.is_unspecified or int(address) == 0xFFFFFFFF:
                 raise ValueError("RP_HOST must be a unicast IPv4 address")
+        if self.ssh_auth not in {"key", "password"}:
+            raise ValueError("RP_SSH_AUTH must be key or password")
+        password_set = bool(self.ssh_password or self.ssh_use_factory_default)
+        if self.ssh_auth == "password" and not password_set:
+            raise ValueError(
+                "RP_SSH_AUTH=password needs RP_SSH_PASSWORD or RP_SSH_USE_FACTORY_DEFAULT=true"
+            )
         for port in (self.port, self.http_port, self.ssh_port):
             if type(port) is not int or not 1 <= port <= 65535:
                 raise ValueError("Ports must be integers from 1 to 65535")
@@ -106,6 +117,9 @@ class Settings:
             allow_lifecycle=_flag(env, "RP_ALLOW_LIFECYCLE"),
             ssh_user=env.get("RP_SSH_USER") or None,
             ssh_port=int(env.get("RP_SSH_PORT", "22")),
+            ssh_auth=cast(Literal["key", "password"], env.get("RP_SSH_AUTH", "key")),
+            ssh_password=env.get("RP_SSH_PASSWORD") or None,
+            ssh_use_factory_default=_flag(env, "RP_SSH_USE_FACTORY_DEFAULT"),
             project_root=Path(env["RP_PROJECT_ROOT"]) if env.get("RP_PROJECT_ROOT") else None,
             allow_project_write=_flag(env, "RP_ALLOW_PROJECT_WRITE"),
             allow_local_build=_flag(env, "RP_ALLOW_LOCAL_BUILD"),
@@ -114,3 +128,18 @@ class Settings:
             else None,
             build_timeout=float(env.get("RP_BUILD_TIMEOUT", "300")),
         )
+
+
+# Factory login of Red Pitaya OS images (user root, password root), as documented by Red Pitaya.
+# Used only when the operator sets RP_SSH_AUTH=password and RP_SSH_USE_FACTORY_DEFAULT=true.
+# Public, documented factory default (not a secret); used only on explicit opt-in.
+RED_PITAYA_FACTORY_PASSWORD = "root"  # nosec B105
+
+
+def ssh_password_for(config: Settings) -> str | None:
+    """Password for password-mode SSH, or None in key mode. Never log or return it."""
+    if config.ssh_auth != "password":
+        return None
+    if config.ssh_password:
+        return config.ssh_password
+    return RED_PITAYA_FACTORY_PASSWORD if config.ssh_use_factory_default else None

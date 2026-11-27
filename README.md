@@ -173,6 +173,7 @@ FPGA-development tools. The FPGA tools are prefixed `rp_fpga_`.
 | `rp_device_diagnostics` | Reads bounded HTTP application/device metadata |
 | `rp_connection_probe` | Connects to the configured SDR port, sends no bytes, and closes |
 | `rp_system_diagnostics` | Runs fixed read-only OS/app/process/FPGA SSH checks; unavailable unless configured |
+| `rp_board_health` | One fixed read-only SSH command: Zynq die temperature, six supply rails (V, with a nominal-range flag), uptime, load average and eth0 error counters; never reads MAC or DNA; unavailable unless `RP_SSH_USER` is set |
 | `rp_app_lifecycle` | Plans `start` or `stop`; `dry_run=true` by default; execution is mock-only |
 | `rp_rx_connect` | Opens RX control/data with validated frequency and rate; live use requires both permission gates |
 | `rp_rx_read` | Reads bounded little-endian float32 I/Q; defaults to 2,048 samples and 8 previews |
@@ -326,3 +327,17 @@ See [validation evidence and precise limits](docs/VALIDATION.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+## Optional SSH authentication modes
+
+Read-only SSH diagnostics (`rp_system_diagnostics`, `rp_board_health`) need `RP_SSH_USER`.
+
+| Variable | Meaning |
+|---|---|
+| `RP_SSH_AUTH=key` (default) | Key authentication with `BatchMode=yes`. No password prompts. |
+| `RP_SSH_AUTH=password` + `RP_SSH_PASSWORD=...` | Opt-in password authentication through OpenSSH `SSH_ASKPASS` (OpenSSH ≥ 8.4). The password never appears in argv, files or logs. |
+| `RP_SSH_AUTH=password` + `RP_SSH_USE_FACTORY_DEFAULT=true` | Uses the Red Pitaya OS factory login (`root`/`root`) for boards that were never changed. Prefer keys, or change the password, on any network you do not control. |
+
+Host keys are still checked strictly (`StrictHostKeyChecking=yes`). Add each board to `known_hosts` once.
+Only the fixed, read-only commands in `SSH_COMMANDS` can run, in every mode.

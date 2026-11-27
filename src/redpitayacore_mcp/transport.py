@@ -6,13 +6,17 @@ import asyncio
 import contextlib
 import json
 import math
+import os
+import re
+import shutil
 import socket
+import tempfile
 from typing import Any
 
 import httpx
 import numpy as np
 
-from .config import Settings
+from .config import Settings, ssh_password_for
 from .protocol import (
     MAX_SAMPLES,
     PTT_HIGH,
@@ -48,8 +52,29 @@ TX_FLUSH_BLOCKS = 3
 TX_START_SILENCE_S = 0.05
 # The board FIFO holds up to this many samples behind the socket before the DAC.
 TX_FIFO_SAMPLES = 6144
+# Board health via read-only sysfs/procfs: Zynq XADC die temperature and supply rails (IIO device
+# named "xadc"; its index differs between OS images), uptime, load average and eth0 error counters.
+# Prints key=value lines only. Never reads MAC addresses or the Zynq DNA.
+BOARD_HEALTH_RAILS = ("vccint", "vccaux", "vccbram", "vccpint", "vccpaux", "vccoddr")
+BOARD_HEALTH_COMMAND = (
+    'd=""; for x in /sys/bus/iio/devices/iio:device*; do '
+    'if [ -r "$x/name" ] && [ "$(cat "$x/name")" = xadc ]; then d="$x"; fi; done; '
+    'if [ -n "$d" ]; then '
+    'echo "temp_raw=$(cat "$d/in_temp0_raw")"; echo "temp_offset=$(cat "$d/in_temp0_offset")"; '
+    'echo "temp_scale=$(cat "$d/in_temp0_scale")"; '
+    "for c in " + " ".join(BOARD_HEALTH_RAILS) + "; do "
+    'for f in "$d"/in_voltage*_"$c"_raw; do [ -r "$f" ] && echo "${c}_raw=$(cat "$f")"; done; '
+    'for f in "$d"/in_voltage*_"$c"_scale; do [ -r "$f" ] && echo "${c}_scale=$(cat "$f")"; done; '
+    "done; fi; "
+    'echo "uptime_s=$(cut -d" " -f1 /proc/uptime)"; '
+    'echo "loadavg=$(cut -d" " -f1-3 /proc/loadavg)"; '
+    "for k in rx_dropped rx_errors tx_dropped tx_errors; do f=/sys/class/net/eth0/statistics/$k; "
+    '[ -r "$f" ] && echo "eth0_${k}=$(cat "$f")"; done; true'
+)
+
 SSH_COMMANDS = {
     "os_release": "cat /etc/os-release",
+    "board_health": BOARD_HEALTH_COMMAND,
     # sysinfo.json also holds the MAC and DNA, so read only the name line. OS 3.00 has no
     # devicetree model node.
     "board_model": "grep '^\"name\"' /tmp/sysinfo.json",
@@ -154,58 +179,104 @@ class DeviceHTTP:
                 return json.loads(body)
 
 
+def _make_askpass_helper() -> tuple[str, str]:
+    """Private 0700 dir with a helper printing $RP_ASKPASS_SECRET (no secret on disk)."""
+    askpass_dir = tempfile.mkdtemp(prefix="rp-askpass-")
+    helper = os.path.join(askpass_dir, "askpass")
+    with open(helper, "w", encoding="ascii") as handle:
+        handle.write("#!/bin/sh\nprintf '%s\\n' \"$RP_ASKPASS_SECRET\"\n")
+    os.chmod(helper, 0o700)
+    return askpass_dir, helper
+
+
 async def _ssh_command(config: Settings, command: str) -> dict[str, Any]:
     host = _require_live(config)
     if command not in SSH_COMMANDS.values() or not config.ssh_user:
         raise ValueError("SSH requires an allowlisted command and RP_SSH_USER")
     # Fixed argv, no local shell. Remote command is a literal from SSH_COMMANDS.
-    process = await asyncio.create_subprocess_exec(
-        "ssh",
-        "-F",
-        "/dev/null",
-        "-T",
-        "-n",
-        "-p",
-        str(config.ssh_port),
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "PasswordAuthentication=no",
-        "-o",
-        "KbdInteractiveAuthentication=no",
-        "-o",
-        "ClearAllForwardings=yes",
-        "-o",
-        "PermitLocalCommand=no",
-        "-o",
-        f"ConnectTimeout={max(1, int(config.timeout))}",
-        f"{config.ssh_user}@{host}",
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        if process.stdout is None:
-            raise RuntimeError("SSH stdout pipe unavailable")
-        async with asyncio.timeout(config.timeout + 1):
-            output = bytearray()
-            while chunk := await process.stdout.read(4096):
-                output.extend(chunk)
-                if len(output) > MAX_RESPONSE:
-                    raise ValueError("SSH response exceeds 65536 bytes")
-            code = await process.wait()
-        return {
-            "available": code == 0,
-            "exit_code": code,
-            "text": output.decode("utf-8", errors="replace").replace("\x00", "").strip(),
+    password = ssh_password_for(config)
+    if password is None:
+        auth = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+        ]
+        env = None
+        askpass_dir = None
+    else:
+        # Password via OpenSSH's SSH_ASKPASS (OpenSSH >= 8.4): a private helper prints the secret
+        # from its environment, so the password never appears in argv, files or logs.
+        askpass_dir, helper = _make_askpass_helper()
+        auth = [
+            "-o",
+            "BatchMode=no",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "NumberOfPasswordPrompts=1",
+        ]
+        env = {
+            **os.environ,
+            "SSH_ASKPASS": helper,
+            "SSH_ASKPASS_REQUIRE": "force",
+            "DISPLAY": os.environ.get("DISPLAY", "none"),
+            "RP_ASKPASS_SECRET": password,
         }
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-T",
+            "-n",
+            "-p",
+            str(config.ssh_port),
+            *auth,
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "PermitLocalCommand=no",
+            "-o",
+            f"ConnectTimeout={max(1, int(config.timeout))}",
+            f"{config.ssh_user}@{host}",
+            command,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            if process.stdout is None:
+                raise RuntimeError("SSH stdout pipe unavailable")
+            async with asyncio.timeout(config.timeout + 1):
+                output = bytearray()
+                while chunk := await process.stdout.read(4096):
+                    output.extend(chunk)
+                    if len(output) > MAX_RESPONSE:
+                        raise ValueError("SSH response exceeds 65536 bytes")
+                code = await process.wait()
+            return {
+                "available": code == 0,
+                "exit_code": code,
+                "text": output.decode("utf-8", errors="replace").replace("\x00", "").strip(),
+            }
+        finally:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+
     finally:
-        if process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+        if askpass_dir is not None:
+            shutil.rmtree(askpass_dir, ignore_errors=True)
 
 
 async def read_system(config: Settings) -> dict[str, Any]:
@@ -556,3 +627,79 @@ class TxBurst:
         self.stop_requested.set()
         if self.task is not None:
             await asyncio.wait({self.task})
+
+
+# Nominal Zynq-7000 rail voltages (V) and an accepted band; values outside are reported, not hidden.
+_RAIL_NOMINAL = {
+    "vccint": 1.0,
+    "vccbram": 1.0,
+    "vccpint": 1.0,
+    "vccaux": 1.8,
+    "vccpaux": 1.8,
+    "vccoddr": 1.5,
+}
+_RAIL_TOLERANCE = 0.1  # +-10 % "in_nominal_range" flag (DDR3L boards run VCCO_DDR at 1.35 V)
+_HEALTH_KEYS = re.compile(
+    r"^(temp_(raw|offset|scale)|(vccint|vccaux|vccbram|vccpint|vccpaux|vccoddr)_(raw|scale)"
+    r"|uptime_s|loadavg|eth0_(rx|tx)_(dropped|errors))$"
+)
+
+
+def parse_board_health(text: str) -> dict[str, Any]:
+    """Parse BOARD_HEALTH_COMMAND output. Remote text is untrusted: unknown keys, duplicate keys
+    and non-numeric values are rejected; physically implausible values are flagged."""
+    values: dict[str, str] = {}
+    for line in text.strip().splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or not _HEALTH_KEYS.match(key) or key in values or len(value) > 64:
+            return {
+                "available": False,
+                "reason": f"unexpected line in board-health output: {line[:40]!r}",
+            }
+        values[key] = value.strip()
+    try:
+        out: dict[str, Any] = {"available": True}
+        if {"temp_raw", "temp_offset", "temp_scale"} <= values.keys():
+            raw, off, scale = (float(values[k]) for k in ("temp_raw", "temp_offset", "temp_scale"))
+            celsius = (raw + off) * scale / 1000.0
+            out["die_temperature_c"] = round(celsius, 3) if -40.0 <= celsius <= 125.0 else None
+            if out["die_temperature_c"] is None:
+                out["die_temperature_note"] = "outside the Zynq operating range; ignored"
+        rails: dict[str, Any] = {}
+        for rail, nominal in _RAIL_NOMINAL.items():
+            if f"{rail}_raw" in values and f"{rail}_scale" in values:
+                volts = float(values[f"{rail}_raw"]) * float(values[f"{rail}_scale"]) / 1000.0
+                in_range = abs(volts - nominal) <= _RAIL_TOLERANCE * nominal
+                rails[rail] = {"volts": round(volts, 4), "in_nominal_range": in_range}
+        out["supply_rails"] = rails
+        if "uptime_s" in values:
+            out["uptime_s"] = float(values["uptime_s"])
+        if "loadavg" in values:
+            out["loadavg"] = [float(v) for v in values["loadavg"].split()][:3]
+        counters = {k: int(v) for k, v in values.items() if k.startswith("eth0_")}
+        if counters:
+            out["eth0_counters"] = counters
+    except ValueError:
+        return {"available": False, "reason": "non-numeric value in board-health output"}
+    if "die_temperature_c" not in out and not rails:
+        out["available"] = False
+        out["reason"] = "XADC device not found"
+    return out
+
+
+async def read_board_health(config: Settings) -> dict[str, Any]:
+    """Temperature, supply rails, uptime, load and eth0 counters via one read-only SSH command."""
+    if config.mode != "live" or not config.ssh_user:
+        return {"available": False, "reason": "Optional read-only SSH disabled; set RP_SSH_USER"}
+    try:
+        result = await _ssh_command(config, BOARD_HEALTH_COMMAND)
+    except (OSError, TimeoutError, ValueError):
+        return {"available": False, "reason": "SSH unavailable, timed out or response too large"}
+    if not result.get("available"):
+        return {"available": False, "reason": result.get("reason", "SSH command failed")}
+    parsed = parse_board_health(str(result.get("text", "")))
+    parsed["note"] = (
+        "Die temperature is a proxy for board temperature, not the crystal itself. "
+        "Remote text is untrusted diagnostic data; MAC and DNA are never read."
+    )
+    return parsed
