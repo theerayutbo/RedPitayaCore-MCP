@@ -39,13 +39,16 @@ def test_parse_board_health_sample():
     assert r["eth0_counters"] == {"eth0_rx_dropped": 0, "eth0_rx_errors": 0}
 
 
-@pytest.mark.parametrize("bad", [
-    "mac=00:11:22:33:44:55",            # unknown key (identifiers must never pass)
-    "temp_raw=1\ntemp_raw=2",           # duplicate key
-    "temp_raw=abc\ntemp_offset=0\ntemp_scale=1",  # non-numeric
-    "garbage line",                      # no key=value
-    "",                                  # nothing found
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "mac=00:11:22:33:44:55",  # unknown key (identifiers must never pass)
+        "temp_raw=1\ntemp_raw=2",  # duplicate key
+        "temp_raw=abc\ntemp_offset=0\ntemp_scale=1",  # non-numeric
+        "garbage line",  # no key=value
+        "",  # nothing found
+    ],
+)
 def test_parse_board_health_rejects_untrusted_text(bad):
     assert parse_board_health(bad)["available"] is False
 

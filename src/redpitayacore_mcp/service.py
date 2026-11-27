@@ -203,9 +203,14 @@ class Service:
 
     async def board_health(self) -> dict[str, Any]:
         if self.config.mode == "mock":
-            return {"mode": "mock", "simulated": True, "available": True,
-                    "die_temperature_c": 45.0, "supply_rails": {},
-                    "note": "Simulated value; mock mode never contacts a board."}
+            return {
+                "mode": "mock",
+                "simulated": True,
+                "available": True,
+                "die_temperature_c": 45.0,
+                "supply_rails": {},
+                "note": "Simulated value; mock mode never contacts a board.",
+            }
         async with self.lock:
             return {"mode": "live", "simulated": False, **await read_board_health(self.config)}
 

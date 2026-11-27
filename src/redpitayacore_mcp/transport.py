@@ -184,7 +184,7 @@ def _make_askpass_helper() -> tuple[str, str]:
     askpass_dir = tempfile.mkdtemp(prefix="rp-askpass-")
     helper = os.path.join(askpass_dir, "askpass")
     with open(helper, "w", encoding="ascii") as handle:
-        handle.write('#!/bin/sh\nprintf \'%s\\n\' "$RP_ASKPASS_SECRET"\n')
+        handle.write("#!/bin/sh\nprintf '%s\\n' \"$RP_ASKPASS_SECRET\"\n")
     os.chmod(helper, 0o700)
     return askpass_dir, helper
 
@@ -196,19 +196,39 @@ async def _ssh_command(config: Settings, command: str) -> dict[str, Any]:
     # Fixed argv, no local shell. Remote command is a literal from SSH_COMMANDS.
     password = ssh_password_for(config)
     if password is None:
-        auth = ["-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
-                "-o", "KbdInteractiveAuthentication=no"]
+        auth = [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+        ]
         env = None
         askpass_dir = None
     else:
         # Password via OpenSSH's SSH_ASKPASS (OpenSSH >= 8.4): a private helper prints the secret
         # from its environment, so the password never appears in argv, files or logs.
         askpass_dir, helper = _make_askpass_helper()
-        auth = ["-o", "BatchMode=no", "-o", "PreferredAuthentications=password",
-                "-o", "PubkeyAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
-                "-o", "NumberOfPasswordPrompts=1"]
-        env = {**os.environ, "SSH_ASKPASS": helper, "SSH_ASKPASS_REQUIRE": "force",
-               "DISPLAY": os.environ.get("DISPLAY", "none"), "RP_ASKPASS_SECRET": password}
+        auth = [
+            "-o",
+            "BatchMode=no",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "NumberOfPasswordPrompts=1",
+        ]
+        env = {
+            **os.environ,
+            "SSH_ASKPASS": helper,
+            "SSH_ASKPASS_REQUIRE": "force",
+            "DISPLAY": os.environ.get("DISPLAY", "none"),
+            "RP_ASKPASS_SECRET": password,
+        }
     try:
         process = await asyncio.create_subprocess_exec(
             "ssh",
@@ -257,6 +277,7 @@ async def _ssh_command(config: Settings, command: str) -> dict[str, Any]:
     finally:
         if askpass_dir is not None:
             shutil.rmtree(askpass_dir, ignore_errors=True)
+
 
 async def read_system(config: Settings) -> dict[str, Any]:
     if config.mode != "live" or not config.ssh_user:
@@ -609,8 +630,14 @@ class TxBurst:
 
 
 # Nominal Zynq-7000 rail voltages (V) and an accepted band; values outside are reported, not hidden.
-_RAIL_NOMINAL = {"vccint": 1.0, "vccbram": 1.0, "vccpint": 1.0, "vccaux": 1.8, "vccpaux": 1.8,
-                 "vccoddr": 1.5}
+_RAIL_NOMINAL = {
+    "vccint": 1.0,
+    "vccbram": 1.0,
+    "vccpint": 1.0,
+    "vccaux": 1.8,
+    "vccpaux": 1.8,
+    "vccoddr": 1.5,
+}
 _RAIL_TOLERANCE = 0.1  # +-10 % "in_nominal_range" flag (DDR3L boards run VCCO_DDR at 1.35 V)
 _HEALTH_KEYS = re.compile(
     r"^(temp_(raw|offset|scale)|(vccint|vccaux|vccbram|vccpint|vccpaux|vccoddr)_(raw|scale)"
@@ -625,8 +652,10 @@ def parse_board_health(text: str) -> dict[str, Any]:
     for line in text.strip().splitlines():
         key, sep, value = line.strip().partition("=")
         if not sep or not _HEALTH_KEYS.match(key) or key in values or len(value) > 64:
-            return {"available": False,
-                    "reason": f"unexpected line in board-health output: {line[:40]!r}"}
+            return {
+                "available": False,
+                "reason": f"unexpected line in board-health output: {line[:40]!r}",
+            }
         values[key] = value.strip()
     try:
         out: dict[str, Any] = {"available": True}

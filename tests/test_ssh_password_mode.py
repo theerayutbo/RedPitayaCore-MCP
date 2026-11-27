@@ -27,8 +27,13 @@ def test_password_mode_requires_a_password_or_explicit_factory_default():
 def test_password_never_in_repr_or_from_env_defaults():
     cfg = live(ssh_auth="password", ssh_password="s3cret")
     assert "s3cret" not in repr(cfg)
-    env = {"RP_MODE": "live", "RP_HOST": "192.0.2.10", "RP_SSH_USER": "root",
-           "RP_SSH_AUTH": "password", "RP_SSH_USE_FACTORY_DEFAULT": "true"}
+    env = {
+        "RP_MODE": "live",
+        "RP_HOST": "192.0.2.10",
+        "RP_SSH_USER": "root",
+        "RP_SSH_AUTH": "password",
+        "RP_SSH_USE_FACTORY_DEFAULT": "true",
+    }
     assert ssh_password_for(Settings.from_env(env)) == "root"
 
 

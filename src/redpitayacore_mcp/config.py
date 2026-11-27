@@ -132,7 +132,8 @@ class Settings:
 
 # Factory login of Red Pitaya OS images (user root, password root), as documented by Red Pitaya.
 # Used only when the operator sets RP_SSH_AUTH=password and RP_SSH_USE_FACTORY_DEFAULT=true.
-RED_PITAYA_FACTORY_PASSWORD = "root"
+# Public, documented factory default (not a secret); used only on explicit opt-in.
+RED_PITAYA_FACTORY_PASSWORD = "root"  # nosec B105
 
 
 def ssh_password_for(config: Settings) -> str | None:
