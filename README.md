@@ -493,3 +493,7 @@ Read-only SSH diagnostics (`rp_system_diagnostics`, `rp_board_health`) need `RP_
 
 Host keys are still checked strictly (`StrictHostKeyChecking=yes`). Add each board to `known_hosts` once.
 Only the fixed, read-only commands in `SSH_COMMANDS` can run, in every mode.
+
+## Experimental SCPI instrument mode (PRISM and laboratory EMI)
+
+A separate entry point in the same package, `python -m redpitayacore_mcp.instrument_server`, exposes `rp_adc_capture`, `rp_frequency_sweep`, `rp_frequency_sweep_plan` and `rp_acquisition_status`. It uses official SCPI common-trigger dual-channel ADC and bounded sine bursts, exporting local NPZ arrays with metadata. Existing SDR/FPGA tools are unchanged. Start in mock; live mode requires operator-started SCPI, exclusive board ownership and hardware acceptance. No automatic app/FPGA switch and no continuous generator tool. See [SCPI instrument setup and acceptance gates](docs/SCPI_INSTRUMENT.md).
