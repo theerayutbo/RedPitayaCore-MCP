@@ -56,3 +56,6 @@ set RP_INSTRUMENT_OUTPUT_DIR to a private directory. No data uploaded by service
 Official acquisition commands: https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/command_list/commands-acq.html
 Official generation commands: https://redpitaya.readthedocs.io/en/latest/appsFeatures/remoteControl/command_list/commands-gen.html
 Common AWG trigger example: https://redpitaya.readthedocs.io/en/latest/appsFeatures/examples/acquisition_generation/acq_genRF-1-synced.html
+
+## Continuous scan integration (mock only)
+`rp_scan_windows` generates up to 300 finite synthetic windows, round-robin frequencies, with per-window NPZ output and nominal synthetic host time interval. Explicitly refuses live mode. This is not ADC hardware timestamping, streaming RF, or a cancellation guarantee.
