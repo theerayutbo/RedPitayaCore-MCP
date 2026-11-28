@@ -144,6 +144,57 @@ def build_server(config: Settings) -> FastMCP[Any]:
         finally:
             lock.release()
 
+    @mcp.tool(annotations=changes)
+    def rp_scan_windows(
+        frequencies_hz: list[int],
+        max_windows: int = 30,
+        interval_s: float = 0.1,
+        amplitude_vpk: float = 0.01,
+    ) -> dict[str, Any]:
+        """Bounded mock-only stream of finite capture windows, round-robin frequency.
+
+        Writes each NPZ immediately. No live RF; live continuous capture requires
+        independent timing, energy budget and cancellation validation.
+        """
+        if config.mode != "mock":
+            raise PermissionError("Continuous hardware capture is not qualified")
+        steps = plan(frequencies_hz)
+        if type(max_windows) is not int or not 1 <= max_windows <= 300:
+            raise ValueError("max_windows must be 1 to 300")
+        if not math.isfinite(interval_s) or not 0.05 <= interval_s <= 1:
+            raise ValueError("interval_s must be 0.05 to 1")
+        if not math.isfinite(amplitude_vpk) or not 0 < amplitude_vpk <= max_vpk:
+            raise ValueError("Invalid amplitude")
+        if not lock.acquire(blocking=False):
+            raise RuntimeError("Instrument already busy")
+        scan_id = uuid.uuid4().hex
+        records = []
+        try:
+            for i in range(max_windows):
+                step = steps[i % len(steps)]
+                a, b, evidence = capture(
+                    config, port=port, decimation=step.decimation, units="VOLTS",
+                    gain1="LV", gain2="LV", step=step, amplitude_vpk=amplitude_vpk,
+                )
+                # Mock data has synthetic timing; wait until its nominal end.
+                remaining = (evidence["synthetic_end_ns"] - time.monotonic_ns()) / 1e9
+                time.sleep(max(0.0, remaining))
+                records.append(save(a, b, {
+                    **evidence, "schema_version": "1.0", "capture_id": uuid.uuid4().hex,
+                    "sweep_id": scan_id, "clock_id": clock, "window_index": i,
+                    "completed_host_ns": time.monotonic_ns(),
+                    "sample_rate_hz": step.sample_rate_hz, "decimation": step.decimation,
+                    "frequency_hz": step.frequency_hz, "units": "VOLTS",
+                    "gain1": "LV", "gain2": "LV", "samples_per_channel": N,
+                    "requested_amplitude_vpk": amplitude_vpk, "burst_cycles": step.cycles,
+                    "averaging": True, "instrument_calibration_verified": False,
+                }))
+                if i + 1 < max_windows:
+                    time.sleep(interval_s)
+            return {"scan_id": scan_id, "records": records, "complete": True, "mode": "mock"}
+        finally:
+            lock.release()
+
     return mcp
 
 
