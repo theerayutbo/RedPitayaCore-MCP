@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .config import Settings
-from .scpi_instrument import FS, N, Gain, Units, capture, plan
+from .scpi_instrument import FS, N, Gain, Units, SCPI, _off, capture, plan
 
 
 def build_server(config: Settings) -> FastMCP[Any]:
@@ -26,6 +26,7 @@ def build_server(config: Settings) -> FastMCP[Any]:
         "exclusive application ownership and safe OUT1 load before excitation.",
     )
     lock = threading.Lock()
+    stop_latch = threading.Event()
     root = Path(os.getenv("RP_INSTRUMENT_OUTPUT_DIR", "./captures")).resolve()
     port = int(os.getenv("RP_SCPI_PORT", "5000"))
     clock = os.getenv("RP_INSTRUMENT_CLOCK_ID") or "local-" + uuid.uuid4().hex
@@ -55,8 +56,41 @@ def build_server(config: Settings) -> FastMCP[Any]:
             "mode": config.mode, "live_scpi_enabled": live_allowed,
             "allow_rx": config.allow_rx, "allow_tx": config.allow_tx,
             "clock_id": clock, "busy": lock.locked(), "max_vpk": max_vpk,
+            "stop_latched": stop_latch.is_set(),
             "hardware_validated": False, "hardware_output_state": "unknown_not_read",
         }
+
+    @mcp.tool(annotations=changes)
+    def rp_instrument_stop(
+        acknowledge_exclusive_scope_and_inputs: bool = False,
+    ) -> dict[str, Any]:
+        """Latch stop for this server lifetime; no new bursts after latch.
+
+        If busy, the active finite operation must finish/clean up. Retry
+        when idle to verify output OFF. This is not a hardware emergency stop.
+        """
+        check_live(acknowledge_exclusive_scope_and_inputs)
+        stop_latch.set()
+        if not lock.acquire(blocking=False):
+            return {"mode": config.mode, "stop_latched": True,
+                    "output_off_confirmed": False, "status": "WAIT_FINITE_WINDOW"}
+        try:
+            if config.mode == "mock":
+                return {"mode": "mock", "stop_latched": True,
+                        "output_off_confirmed": False, "status": "MOCK_STOPPED"}
+            if not config.host:
+                raise PermissionError("Configured board required")
+            scpi = SCPI(config.host, port, config.timeout)
+            try:
+                _off(scpi)
+                scpi.send("ACQ:STOP")
+                return {"mode": "live", "stop_latched": True,
+                        "output_off_confirmed": True, "status": "SCPI_OFF_READBACK",
+                        "physical_rf_absence_verified": False}
+            finally:
+                scpi.close()
+        finally:
+            lock.release()
 
     @mcp.tool()
     def rp_frequency_sweep_plan(frequencies_hz: list[int]) -> dict[str, Any]:
@@ -80,6 +114,8 @@ def build_server(config: Settings) -> FastMCP[Any]:
         if not lock.acquire(blocking=False):
             raise RuntimeError("Instrument already busy")
         try:
+            if stop_latch.is_set():
+                raise RuntimeError("Instrument stop is latched; restart only after operator review")
             a, b, evidence = capture(
                 config, port=port, decimation=decimation, units=units,
                 gain1=gain1, gain2=gain2,
@@ -126,6 +162,8 @@ def build_server(config: Settings) -> FastMCP[Any]:
         records = []
         try:
             for step in steps:
+                if stop_latch.is_set():
+                    return {"sweep_id": sweep_id, "records": records, "complete": False, "status": "STOP_LATCHED"}
                 a, b, evidence = capture(
                     config, port=port, decimation=step.decimation, units=units,
                     gain1=gain1, gain2=gain2, step=step, amplitude_vpk=amplitude_vpk,
@@ -171,6 +209,8 @@ def build_server(config: Settings) -> FastMCP[Any]:
         records = []
         try:
             for i in range(max_windows):
+                if stop_latch.is_set():
+                    return {"scan_id": scan_id, "records": records, "complete": False, "mode": "mock", "status": "STOP_LATCHED"}
                 step = steps[i % len(steps)]
                 a, b, evidence = capture(
                     config, port=port, decimation=step.decimation, units="VOLTS",
