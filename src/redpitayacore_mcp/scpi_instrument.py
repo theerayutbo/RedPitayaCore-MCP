@@ -150,6 +150,7 @@ def capture(
         if not math.isfinite(amplitude_vpk) or not 0 < amplitude_vpk <= 0.1:
             raise ValueError("Invalid peak voltage")
     if config.mode == "mock":
+        started_ns = time.monotonic_ns()
         t = np.arange(N) * decimation / FS
         f = step.frequency_hz if step else min(1000, FS / decimation / 16)
         amplitude = amplitude_vpk if step else 0.01
@@ -157,7 +158,13 @@ def capture(
         b = amplitude * 0.8 * np.sin(2 * np.pi * f * t)
         if units == "RAW":
             a, b = np.round(a * 8192), np.round(b * 8192)
-        return a, b, {"mode": "mock", "trigger": "synthetic", "timestamp_source": "synthetic"}
+        return a, b, {
+            "mode": "mock",
+            "trigger": "synthetic",
+            "timestamp_source": "synthetic_host_window_not_adc",
+            "synthetic_start_ns": started_ns,
+            "synthetic_end_ns": started_ns + math.ceil(N * decimation / FS * 1e9),
+        }
     if not config.host or not config.allow_rx:
         raise PermissionError("Live SCPI capture requires configured host and RP_ALLOW_RX")
     if step:
